@@ -74,6 +74,20 @@ def send_message(chat_id: str, message: str):
     except Exception as e:
         log.error("Send message error: %s", e)
 
+def send_audio_message(chat_id: str, filepath: str):
+    """Send an audio file as a voice note via Green API."""
+    try:
+        import os
+        _, api_token, base_url = _get_green_api_config()
+        url = f"{base_url}/sendFileByUpload/{api_token}"
+        with open(filepath, 'rb') as f:
+            files = {'file': (os.path.basename(filepath), f, 'audio/mpeg')}
+            data = {'chatId': chat_id}
+            resp = requests.post(url, data=data, files=files, timeout=30)
+        log.info("Audio sent to %s (status=%d)", chat_id, resp.status_code)
+    except Exception as e:
+        log.error("Send audio error: %s", e)
+
 
 def mark_seen(chat_id: str):
     """Mark messages as read."""
@@ -460,24 +474,21 @@ def handle_webhook(body: dict, reply_with_voice: bool = True):
         client = _get_gemini_client()
         reply, result_data, result_type = generate_reply(chat_id, user_message, client)
 
-        # ── Send reply (voice if user sent voice, else text) ──────────────
-        if is_voice_input and reply_with_voice:
-            # Detect language for voice reply
-            # Simple heuristic: if reply contains mostly English characters, use English voice
-            english_ratio = sum(1 for c in reply if c.isascii()) / max(len(reply), 1)
-            voice_lang = "en-US" if english_ratio > 0.7 else "ur-PK"
-
-            audio = synthesize_voice_sana(reply, voice_lang)
-            if audio:
-                send_voice_message(chat_id, audio)
-                log.info("Voice reply sent to %s", chat_id)
-            else:
-                # Fallback to text if TTS fails
-                send_message(chat_id, reply)
-        else:
-            send_message(chat_id, reply)
-
+        # ── Send text reply ──────────────────────────────────────────────────
+        send_message(chat_id, reply)
         log.info("Replied to %s", chat_id)
+
+        # ── Send voice reply (only if user sent a voice note) ────────────────
+        if type_message == "audioMessage":
+            from whatsapp.tts import generate_tts_audio
+            import os
+            audio_path = generate_tts_audio(reply)
+            if audio_path and os.path.exists(audio_path):
+                send_audio_message(chat_id, audio_path)
+                try:
+                    os.remove(audio_path)
+                except Exception as e:
+                    log.error("Temp audio remove error: %s", e)
 
         # ── Send confirmation if transaction was completed ───────────────
         if result_data:
