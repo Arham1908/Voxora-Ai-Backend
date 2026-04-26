@@ -397,12 +397,6 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
         qs = self.scope.get("query_string", b"").decode("utf-8")
         print(f"[WS Connect] transport={self._transport}, query_string='{qs}'", flush=True)
 
-        # print(
-        #     f"[WS Connect] SA email='{_sa_info.get('client_email')}', "
-        #     f"project='{_PROJECT}', location='{_LOCATION}'",
-        #     flush=True,
-        # )
-
         # Primary: Direct Google AI Studio API (Gemini 3.1 Flash Live Preview)
         self.client = await sync_to_async(
             lambda: genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
@@ -949,11 +943,14 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
                         self._usage_metrics["prompt"] = max(self._usage_metrics["prompt"], getattr(usage, "prompt_token_count", 0) or 0)
                         self._usage_metrics["response"] = max(self._usage_metrics["response"], getattr(usage, "response_token_count", 0) or 0)
                         self._usage_metrics["total"] = max(self._usage_metrics["total"], getattr(usage, "total_token_count", 0) or 0)
-                        
-                        # Thinking tokens are billed at the text output rate
+
+                        # Thinking tokens are billed at the text output rate — track separately to avoid overwrite
                         thoughts_count = getattr(usage, "thoughts_token_count", 0) or 0
                         if thoughts_count > 0:
-                            self._usage_metrics["output_text"] = max(self._usage_metrics["output_text"], thoughts_count)
+                            # Accumulate thinking tokens without overwriting response_tokens_details values
+                            if not hasattr(self, "_thinking_tokens_from_usage"):
+                                self._thinking_tokens_from_usage = 0
+                            self._thinking_tokens_from_usage = max(self._thinking_tokens_from_usage, thoughts_count)
 
                         # Parse prompt details (modality-specific in)
                         prompt_details = getattr(usage, "prompt_tokens_details", None) or []
@@ -1118,48 +1115,73 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
         duration = 0
         if self._start_time:
             duration = int(time.time() - self._start_time)
-            
+
         agent_type = "healthcare"
         if hasattr(self, "_agent_cfg") and self._agent_cfg:
             agent_type = self._agent_cfg.get("id", "healthcare")
 
         if self._usage_metrics["total"] > 0 or duration > 0:
             try:
-                # Gemini 3.1 Flash pricing (estimated):
-                # Input: $0.75/1M text, $3.00/1M audio
-                # Output: $4.50/1M text, $12.00/1M audio
-                input_text_cost   = float(self._usage_metrics["input_text"])  * 0.00000075  # $0.75/1M
-                input_audio_cost  = float(self._usage_metrics["input_audio"]) * 0.000003    # $3.00/1M
-                output_text_cost  = float(self._usage_metrics["output_text"]) * 0.0000045   # $4.50/1M
-                output_audio_cost = float(self._usage_metrics["output_audio"]) * 0.000012   # $12.00/1M
-                total_cost = input_text_cost + input_audio_cost + output_text_cost + output_audio_cost
+                m = self._usage_metrics
+
+                # Include thinking tokens in output_text if they were collected
+                thinking_tokens = getattr(self, "_thinking_tokens_from_usage", 0) or 0
+                output_text_with_thinking = m["output_text"] + thinking_tokens
+
+                # Determine if modality details were returned by the API
+                modality_data_available = (
+                    m["input_text"] + m["input_audio"] +
+                    m["output_text"] + m["output_audio"]
+                ) > 0
+
+                if modality_data_available:
+                    # Precise path — modality breakdown was returned by the API
+                    input_text_cost   = float(m["input_text"])  * 0.00000075   # $0.75/1M
+                    input_audio_cost  = float(m["input_audio"]) * 0.000003     # $3.00/1M
+                    output_text_cost  = float(output_text_with_thinking) * 0.0000045   # $4.50/1M
+                    output_audio_cost = float(m["output_audio"]) * 0.000012    # $12.00/1M
+                    total_cost = (
+                        input_text_cost + input_audio_cost +
+                        output_text_cost + output_audio_cost
+                    )
+                    cost_method = "modality"
+                else:
+                    # Fallback path — modality details were not returned by the API.
+                    # Use blended rates on prompt/response token counts.
+                    # Voice calls are ~95% audio tokens, so bias toward audio rates.
+                    # Input blended: ~5% text ($0.75) + ~95% audio ($3.00) ≈ $2.89/1M
+                    # Output blended: ~5% text ($4.50) + ~95% audio ($12.00) ≈ $11.62/1M
+                    INPUT_BLENDED_RATE  = 0.0000028875   # $2.8875/1M
+                    OUTPUT_BLENDED_RATE = 0.0000114      # $11.40/1M
+                    input_cost  = float(m["prompt"])   * INPUT_BLENDED_RATE
+                    output_cost = float(m["response"]) * OUTPUT_BLENDED_RATE
+                    total_cost  = input_cost + output_cost
+                    cost_method = "blended_fallback"
 
                 await sync_to_async(GeminiSessionCost.objects.create)(
                     session_id=self._session_uuid,
                     agent_type=agent_type,
-                    prompt_tokens=self._usage_metrics["prompt"],
-                    response_tokens=self._usage_metrics["response"],
-                    total_tokens=self._usage_metrics["total"],
-                    input_text_tokens=self._usage_metrics["input_text"],
-                    input_audio_tokens=self._usage_metrics["input_audio"],
-                    output_text_tokens=self._usage_metrics["output_text"],
-                    output_audio_tokens=self._usage_metrics["output_audio"],
+                    prompt_tokens=m["prompt"],
+                    response_tokens=m["response"],
+                    total_tokens=m["total"],
+                    input_text_tokens=m["input_text"],
+                    input_audio_tokens=m["input_audio"],
+                    output_text_tokens=output_text_with_thinking,
+                    output_audio_tokens=m["output_audio"],
                     call_duration_seconds=duration,
                     estimated_cost_usd=total_cost,
                 )
                 print(
-                    f"[WS] Session cost: "
-                    f"in_text={self._usage_metrics['input_text']}, "
-                    f"in_audio={self._usage_metrics['input_audio']}, "
-                    f"out_text={self._usage_metrics['output_text']}, "
-                    f"out_audio={self._usage_metrics['output_audio']}, "
-                    f"total={self._usage_metrics['total']} "
+                    f"[WS] Session cost [{cost_method}]: "
+                    f"prompt={m['prompt']}, response={m['response']}, total={m['total']} "
+                    f"| in_text={m['input_text']}, in_audio={m['input_audio']}, "
+                    f"out_text={output_text_with_thinking}, out_audio={m['output_audio']} "
                     f"(${total_cost:.6f}) duration={duration}s",
                     flush=True,
                 )
             except Exception as e:
                 logger.error(f"Failed to save Gemini session cost: {e}")
-                
+
         if self._call_history:
             try:
                 await sync_to_async(CallHistory.objects.create)(
