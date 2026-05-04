@@ -12,6 +12,7 @@ class GeminiSessionCost(models.Model):
     output_audio_tokens = models.IntegerField(default=0, help_text="Number of output audio tokens (agent speech)")
     call_duration_seconds = models.IntegerField(default=0, help_text="Duration of the voice call in seconds")
     estimated_cost_usd = models.DecimalField(max_digits=10, decimal_places=6, default=0.000000, help_text="Estimated cost based on $3 per 1M input / $12 per 1M output audio tokens")
+    cost_calculation_method = models.CharField(max_length=50, default="modality", choices=[("modality", "Precise modality breakdown"), ("blended_fallback", "Blended fallback rates")], help_text="Which calculation method was used: modality (precise) or blended_fallback (when modality details missing)")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -22,6 +22,7 @@ Voice reply flow (matches Green API behaviour):
     -> meta_send_voice()          sends audio message via Meta
 """
 
+import asyncio
 import io
 import json
 import logging
@@ -37,6 +38,9 @@ from whatsapp.ai_agent import generate_reply
 from whatsapp.bot import _get_gemini_client, synthesize_voice_sana
 
 log = logging.getLogger(__name__)
+
+# Global event loop for async operations from sync threads
+_main_event_loop = None
 
 
 # ── Meta API helpers ──────────────────────────────────────────────────────────
@@ -77,7 +81,7 @@ def meta_mark_read(message_id: str):
         "message_id": message_id,
     }
     try:
-        requests.post(url, json=payload, headers=_meta_headers(), timeout=10)
+        requests.post(url, json=payload, headers=_meta_headers(), timeout=30)
     except Exception as exc:
         log.warning("meta_mark_read error: %s", exc)
 
@@ -313,7 +317,12 @@ def _process_meta_message(entry: dict):
     """Process a single webhook entry in a background thread."""
     try:
         for change in entry.get("changes", []):
+            field = change.get("field", "")
             value = change.get("value", {})
+
+            # Skip call events as they are now handled by the async view directly
+            if field == "calls":
+                continue
 
             for msg in value.get("messages", []):
                 message_id = msg.get("id", "")
@@ -379,7 +388,7 @@ def _process_meta_message(entry: dict):
 # ── Django Views ──────────────────────────────────────────────────────────────
 
 @csrf_exempt
-def meta_webhook(request):
+async def meta_webhook(request):
     """
     Handles both GET (verification) and POST (messages) from Meta.
 
@@ -414,26 +423,41 @@ def meta_webhook(request):
     if request.method == "POST":
         try:
             body = json.loads(request.body)
-            log.info("Meta POST object=%s", body.get("object", ""))
+            log.info("📬 Meta POST object=%s", body.get("object", ""))
 
             if body.get("object") != "whatsapp_business_account":
+                log.warning("❌ Invalid object type: %s", body.get("object"))
                 return JsonResponse({"status": "ignored"})
 
-            for entry in body.get("entry", []):
-                t = threading.Thread(
-                    target=_process_meta_message,
-                    args=(entry,),
-                    daemon=True,
+            entries = body.get("entry", [])
+            log.info("📋 Processing %d entries", len(entries))
+
+            for entry_idx, entry in enumerate(entries):
+                changes = entry.get("changes", [])
+                log.debug("  Entry %d has %d changes", entry_idx, len(changes))
+
+                for change in changes:
+                    field = change.get("field", "")
+                    log.debug("    Field: %s", field)
+                    
+                    if field == "calls":
+                        from whatsapp.calls import handle_call_event
+                        asyncio.create_task(handle_call_event(change.get("value", {})))
+                        continue
+
+                # Run message processing in thread (blocking I/O), but
+                # schedule it from the ASGI loop so it doesn't block the view
+                asyncio.get_event_loop().run_in_executor(
+                    None, _process_meta_message, entry
                 )
-                t.start()
 
             return JsonResponse({"status": "ok"})
 
         except json.JSONDecodeError:
-            log.warning("Meta POST — invalid JSON")
+            log.warning("❌ Meta POST — invalid JSON")
             return HttpResponse(status=400)
         except Exception as exc:
-            log.error("Meta POST error: %s", exc)
+            log.error("❌ Meta POST error: %s", exc, exc_info=True)
             return JsonResponse({"status": "error"}, status=500)
 
     return HttpResponse(status=405)
@@ -449,4 +473,112 @@ def meta_health(request):
         "verify_token_configured": bool(os.getenv("META_VERIFY_TOKEN")),
         "access_token_configured": bool(os.getenv("META_ACCESS_TOKEN")),
         "webhook_url_hint": "/whatsapp/meta/webhook/",
+    })
+
+
+# ── WHATSAPP CALLS (WebRTC Bridge) ───────────────────────────────────────────
+
+@csrf_exempt
+async def meta_call_webhook(request):
+    """
+    Handles WhatsApp Calling API webhook events.
+    GET  → Meta verification (same token as messages)
+    POST → incoming call events (status=initiated, ended, failed, ice_candidate)
+    """
+    if request.method == "GET":
+        mode = request.GET.get("hub.mode", "")
+        token = request.GET.get("hub.verify_token", "")
+        challenge = request.GET.get("hub.challenge", "")
+        expected = os.getenv("META_VERIFY_TOKEN", "")
+
+        log.info(
+            "Meta call verify → mode=%s token_match=%s challenge=%s",
+            mode,
+            token == expected,
+            challenge,
+        )
+
+        if mode == "subscribe" and token == expected:
+            log.info("✅ Meta call webhook verified successfully")
+            return HttpResponse(challenge, content_type="text/plain", status=200)
+
+        log.warning("❌ Meta call webhook verification failed")
+        return HttpResponse("Forbidden", status=403)
+
+    if request.method == "POST":
+        try:
+            from whatsapp.calls import handle_call_event
+
+            body = json.loads(request.body)
+            object_type = body.get("object", "")
+            log.info("📞 Meta call POST received → object=%s", object_type)
+
+            if object_type != "whatsapp_business_account":
+                log.warning("❌ Meta call POST ignored → invalid object type: %s (expected: whatsapp_business_account)", object_type)
+                return JsonResponse({"status": "ignored"})
+
+            entries = body.get("entry", [])
+            log.info("📋 Processing %d entries", len(entries))
+
+            call_webhook_received = False
+            for entry_idx, entry in enumerate(entries):
+                changes = entry.get("changes", [])
+                log.debug("  Entry %d has %d changes", entry_idx, len(changes))
+
+                for change_idx, change in enumerate(changes):
+                    field = change.get("field", "")
+                    log.debug("    Change %d → field=%s", change_idx, field)
+
+                    if field == "calls":
+                        call_webhook_received = True
+                        call_event = change.get("value", {})
+                        call_id = call_event.get("call_id", "unknown")
+                        status = call_event.get("status", "unknown")
+                        caller = call_event.get("from", "unknown")
+
+                        log.info(
+                            "✅ CALLS webhook received → call_id=%s status=%s from=%s",
+                            call_id,
+                            status,
+                            caller,
+                        )
+                        # Schedule async handler properly on ASGI event loop
+                        asyncio.create_task(handle_call_event(call_event))
+                    else:
+                        log.debug("⏭️  Skipping non-calls field: %s", field)
+
+            if not call_webhook_received:
+                log.warning("⚠️  Meta POST received but NO calls webhook found (only messages or other fields)")
+
+            return JsonResponse({"status": "ok"})
+
+        except json.JSONDecodeError as exc:
+            log.error("❌ Meta call POST — invalid JSON: %s", exc)
+            return HttpResponse(status=400)
+        except Exception as exc:
+            log.error("❌ Meta call POST error: %s", exc, exc_info=True)
+            return JsonResponse({"status": "error"}, status=500)
+
+    log.warning("⚠️  Meta call webhook received invalid HTTP method: %s", request.method)
+    return HttpResponse(status=405)
+
+
+@csrf_exempt
+def meta_call_health(request):
+    """Health check for WhatsApp Calling API."""
+    from whatsapp.calls import active_calls
+
+    return JsonResponse({
+        "status": "active",
+        "service": "BlenSpark Meta WhatsApp Calls (WebRTC)",
+        "active_calls": len(active_calls),
+        "calls": [
+            {
+                "call_id": call_id,
+                "caller": session.caller_number,
+                "agent": session.agent_name,
+                "webrtc_state": session.pc.connectionState if session.pc else "none",
+            }
+            for call_id, session in active_calls.items()
+        ],
     })

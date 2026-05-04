@@ -1079,7 +1079,7 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
                             logger.info(f"Greeting saved to {save_path}")
                             self._save_as_greeting = False
                             greeting_buffer.clear()
-                            
+
                         if self._current_agent_turn:
                             self._call_history.append({"role": "agent", "text": self._current_agent_turn.strip()})
                             idx = self._current_agent_turn.lower()
@@ -1088,12 +1088,20 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
                                 h.get("tool_name") in ["book_appointment", "place_order"]
                                 for h in self._call_history
                             )
-                            
+
                             if goodbye_detected:
                                 print(f"[WS] Detected call end greeting (Allah Hafiz / Goodbye) — scheduling disconnect.", flush=True)
+                                # Signal WhatsApp/SIP call end if this is a WebRTC/external call
+                                try:
+                                    await self.send(text_data=json.dumps({
+                                        "event": "call_end",
+                                        "reason": "goodbye_detected"
+                                    }))
+                                except Exception:
+                                    pass
                                 self._should_end_call = True
                             self._current_agent_turn = ""
-                            
+
                         if self._should_end_call:
                             asyncio.create_task(self._delayed_close(6.0))
 
@@ -1170,6 +1178,7 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
                     output_audio_tokens=m["output_audio"],
                     call_duration_seconds=duration,
                     estimated_cost_usd=total_cost,
+                    cost_calculation_method=cost_method,
                 )
                 print(
                     f"[WS] Session cost [{cost_method}]: "
