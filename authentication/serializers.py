@@ -18,7 +18,9 @@ class RegisterSerializer(serializers.ModelSerializer):
 class LoginSerializer(serializers.ModelSerializer):
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
-
+    class Meta:
+        model =User
+        fields =['email','password']
     def validate(self,attrs):
         user = authenticate(username=attrs['email'],password=attrs['password'])
         if not user:
@@ -34,8 +36,8 @@ class GoogleAuthSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields =['id','email','is_active','role','create_at','auth_provider']
-        read_only =['email','role','auth_provider','created_at']
+        fields =['id','email','is_active','role','created_at','auth_provider']
+        read_only_fields =['email','role','auth_provider','created_at']
 
 class UpdateProfileSerializer(serializers.ModelSerializer):
     class Meta:
@@ -53,5 +55,5 @@ class ChangePasswordSerializer(serializers.ModelSerializer):
         return value
     def save(self):
         user = self.context['request'].user
-        user.set_password(self.valideted_data['new_password'])
+        user.set_password(self.validated_data['new_password'])
         user.save()

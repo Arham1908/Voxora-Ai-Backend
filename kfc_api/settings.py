@@ -16,7 +16,7 @@ import sys
 import json
 import tempfile
 from dotenv import load_dotenv
-
+from datetime import timedelta
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 _IS_FROZEN = getattr(sys, 'frozen', False)
 _RUNTIME_PATH = sys.executable if _IS_FROZEN else __file__
@@ -89,6 +89,7 @@ INSTALLED_APPS = [
 # EMAIL_HOST_USER  = os.getenv('EMAIL_HOST_USER', 'alihassan9682@gmail.com')
 # EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', 'fctj lcfy qnjz fuen')  # Gmail App Password
 
+AUTH_USER_MODEL ='authentication.User'
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
@@ -248,9 +249,22 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 
 # Exempt API endpoints from CSRF for external webhooks
+from datetime import timedelta
+
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': [],
-    'DEFAULT_PERMISSION_CLASSES': [],
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+}
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
 }
 
 # ElevenLabs Configuration

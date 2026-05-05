@@ -32,10 +32,10 @@ class RegisterView(APIView):
     permission_classes = [AllowAny]
 
     def post(self,request):
-        serializer = RegisterSerializer(data=request.body)
+        serializer = RegisterSerializer(data=request.data)
         if serializer.is_valid():
             user = serializer.save()
-            tokens = get_token(user)
+            tokens = get_tokens(user)
             return Response(
                 {
                     'message':'Account Created Successful',
@@ -46,3 +46,22 @@ class RegisterView(APIView):
         return Response({
             'error':serializer.errors,
         },status =status.HTTP_400_BAD_REQUEST)
+    
+class LoginView(APIView):
+    permission_classes=[AllowAny]
+
+    def post(self,request):
+        serializer= LoginSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.validated_data['user']
+            tokens = get_tokens(user)
+            return Response({
+                'user': UserSerializer(user).data,
+                **tokens
+            },status=status.HTTP_200_OK)
+        return Response(
+            serializer.errors, 
+            status=status.HTTP_400_BAD_REQUEST)  
+
+
+

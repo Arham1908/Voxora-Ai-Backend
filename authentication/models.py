@@ -3,20 +3,19 @@ from django.db import models
 
 
 class UserManager(BaseUserManager):
-    def create_user(self,email,password=None ,**extra_fields):
+    def create_user(self, email, password=None, **extra_fields):
         if not email:
             raise ValueError("Email Required")
-        email =self.normalize_email(email)
-        user = self.model(email=email ,**extra_fields)
+        email = self.normalize_email(email)
+        user = self.model(email=email, **extra_fields)
         user.set_password(password)
         user.save()
         return user
-    def create_superuser(user, email,password, **extra_fields):
-        extra_fields.setdefault('is_stuff',True)
-        extra_fields.setdefault('is_superuser',True)
-        return self.create_user(email,password,extra_fields)
         
-
+    def create_superuser(self, email, password, **extra_fields):
+        extra_fields.setdefault('is_staff', True)
+        extra_fields.setdefault('is_superuser', True)
+        return self.create_user(email, password, **extra_fields)
 
 class User(AbstractBaseUser, PermissionsMixin):
     email =models.EmailField(unique=True)
@@ -38,18 +37,8 @@ class User(AbstractBaseUser, PermissionsMixin):
     role =models.CharField(max_length=20,choices=ROLE_CHOICES, default='user')
 
     created_at = models.DateTimeField(auto_now_add=True)
-    groups = models.ManyToManyField(
-        'auth.Group',
-        blank=True,
-        related_name='authentication_users'
-    )
-    user_permissions = models.ManyToManyField(
-        'auth.Permission',
-        blank=True,
-        related_name='authentication_users'
-    )
     USERNAME_FIELD  = 'email'
-    REQUIRED_FIELDS = ['email']
+    REQUIRED_FIELDS = []
 
     objects =UserManager()
 
