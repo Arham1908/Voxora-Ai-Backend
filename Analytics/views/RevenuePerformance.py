@@ -5,11 +5,13 @@ from django.db.models import Sum
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from menu.models import Order
+from rest_framework.permissions import AllowAny
 
 class RevenuePerformance(APIView):
     """
     API to get number of orders and total revenue for each of the last 7 days
     """
+    permission_classes = [AllowAny]
 
     def get(self, request, *args, **kwargs):
         today = timezone.now().date()

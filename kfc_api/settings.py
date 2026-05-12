@@ -16,7 +16,7 @@ import sys
 import json
 import tempfile
 from dotenv import load_dotenv
-
+from datetime import timedelta
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 _IS_FROZEN = getattr(sys, 'frozen', False)
 _RUNTIME_PATH = sys.executable if _IS_FROZEN else __file__
@@ -72,8 +72,10 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     "rest_framework",
+    'authentication',
     "menu",
     "Analytics",
     "appointment",
@@ -87,6 +89,7 @@ INSTALLED_APPS = [
 # EMAIL_HOST_USER  = os.getenv('EMAIL_HOST_USER', 'alihassan9682@gmail.com')
 # EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', 'fctj lcfy qnjz fuen')  # Gmail App Password
 
+AUTH_USER_MODEL ='authentication.User'
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
@@ -119,8 +122,8 @@ WSGI_APPLICATION = 'kfc_api.wsgi.application'
 ASGI_APPLICATION = 'kfc_api.asgi.application'
 
 
-# Database
-# https://docs.djangoproject.com/en/5.2/ref/settings/#databases
+Database
+https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 DATABASES = {
     'default': {
@@ -186,28 +189,54 @@ CORS_ALLOW_CREDENTIALS = True
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": "[{levelname}] {name}: {message}",
+            "style": "{",
+        },
+    },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
+            "formatter": "verbose",
         },
     },
+    "root": {
+        # Catch-all: any logger not explicitly listed falls through here
+        "handlers": ["console"],
+        "level": "WARNING",
+    },
     "loggers": {
-        "voice.sip_client": {  # Changed from 'voice_agent.sip_client' to match your app name
-            "handlers": ["console"],
-            "level": "DEBUG",
-            "propagate": True,
-        },
+        # Voice agent consumers
         "voice": {
             "handlers": ["console"],
             "level": "DEBUG",
-        }
-    }
+            "propagate": False,
+        },
+        "voice.sip_client": {
+            "handlers": ["console"],
+            "level": "DEBUG",
+            "propagate": False,
+        },
+        # WhatsApp bot + WebRTC calling (calls.py, meta_views.py, bot.py, etc.)
+        "whatsapp": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        # Django internals — keep at WARNING to reduce noise
+        "django": {
+            "handlers": ["console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+    },
 }
 # CSRF Configuration for API
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost:*',
     'http://127.0.0.1:*',
-    'https://*.elevenlabs.io',
+    # 'https://*.elevenlabs.io',
     'https://*.green-api.com',
     # Meta / WhatsApp Business Cloud API
     'https://*.facebook.com',
@@ -220,9 +249,22 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 
 # Exempt API endpoints from CSRF for external webhooks
+from datetime import timedelta
+
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': [],
-    'DEFAULT_PERMISSION_CLASSES': [],
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+}
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
 }
 
 # ElevenLabs Configuration

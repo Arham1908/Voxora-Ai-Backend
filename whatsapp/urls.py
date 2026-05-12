@@ -11,7 +11,7 @@ urls.py — URL routes for the WhatsApp bot webhook.
 
 from django.urls import path
 from whatsapp.views import webhook, health
-from whatsapp.meta_views import meta_webhook, meta_health
+from whatsapp.meta_views import meta_webhook, meta_health, meta_call_webhook, meta_call_health
 
 urlpatterns = [
     # ── Green API (unchanged) ──────────────────────────────────────────────
@@ -21,4 +21,8 @@ urlpatterns = [
     # ── Meta WhatsApp Business Cloud API ──────────────────────────────────
     path("meta/webhook/", meta_webhook, name="meta_whatsapp_webhook"),
     path("meta/health/",  meta_health,  name="meta_whatsapp_health"),
+
+    # ── Meta WhatsApp Calling API (WebRTC) ──────────────────────────────────
+    path("meta/calls/webhook/", meta_call_webhook, name="meta_whatsapp_call_webhook"),
+    path("meta/calls/health/",  meta_call_health,  name="meta_whatsapp_call_health"),
 ]

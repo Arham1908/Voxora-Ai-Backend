@@ -5,11 +5,13 @@ from collections import defaultdict
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from menu.models import Order
+from rest_framework.permissions import AllowAny
 
 class SalesDistribution(APIView):
     """
     API to get total quantity sold per menu item in the past 7 days
     """
+    permission_classes = [AllowAny]
 
     def get(self, request, *args, **kwargs):
         today = timezone.now().date()

@@ -15,7 +15,7 @@ import urllib.parse
 import truststore
 truststore.inject_into_ssl()
 
-from .consumers import VoiceAgentConsumer, MIC_RATE, OUT_RATE, _save_wav
+from .consumers import VoiceAgentConsumer, MIC_RATE, OUT_RATE, _clean_transcript_text, _save_wav
 from .agents.registry import get_agent
 
 logger = logging.getLogger(__name__)
@@ -297,10 +297,20 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                             if getattr(p, "text", None):
                                 print(f"[BrowserWS DEBUG] Model Text: {p.text}", flush=True)
 
+                    if getattr(response, "go_away", None):
+                        go_away = response.go_away
+                        print(
+                            f"[BrowserWS] Received GoAway from Gemini. time_left={go_away.time_left}s — auto-closing.",
+                            flush=True,
+                        )
+                        self._schedule_auto_close(1.0, "gemini_go_away")
+                        return
+
                     # ── Tool call handling ──────────────────────────────────
                     tool_call = getattr(response, "tool_call", None)
                     if tool_call:
                         self._pending_tool_calls += len(tool_call.function_calls)
+                        terminal_tool_completed = False
                         # Before tool call, save any pending agent turn to history
                         if self._current_agent_turn:
                             self._call_history.append({"role": "agent", "text": self._current_agent_turn})
@@ -312,16 +322,22 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                             tool_args = dict(fc.args) if fc.args else {}
                             print(f"[BrowserWS] [Tool Call] {tool_name}({tool_args})", flush=True)
 
-                            # Track if this is the booking/placing call
-                            if tool_name == "book_appointment":
-                                self._booking_state = "booked"
-                                print(f"[BrowserWS] book_appointment tool called - marking as booked", flush=True)
-                            elif tool_name == "place_order":
-                                self._booking_state = "booked"
-                                print(f"[BrowserWS] place_order tool called - marking as booked", flush=True)
+                            if tool_name in ("book_appointment", "place_order"):
+                                self._booking_state = "booking_requested"
+                                print(f"[BrowserWS] {tool_name} tool requested", flush=True)
 
-                            result = await self._execute_tool(tool_name, tool_args)
+                            validation_error = self._validate_terminal_tool_args(tool_name, tool_args)
+                            if validation_error:
+                                result = validation_error
+                            else:
+                                result = await self._execute_tool(tool_name, tool_args)
                             print(f"[BrowserWS] [Tool Result] {tool_name} → {result}", flush=True)
+                            if (
+                                tool_name in ("book_appointment", "place_order")
+                                and not (isinstance(result, dict) and result.get("error"))
+                            ):
+                                self._booking_state = "booked"
+                                terminal_tool_completed = True
                             
                             self._call_history.append({
                                 "role": "tool",
@@ -342,6 +358,9 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                             await session.send_tool_response(function_responses=function_responses)
                             self._pending_tool_calls = 0  # Tool calls completed
                             print(f"[BrowserWS] Successfully sent tool responses for {len(function_responses)} calls", flush=True)
+                            if terminal_tool_completed:
+                                print("[BrowserWS] Terminal tool succeeded — auto-close armed.", flush=True)
+                                self._schedule_auto_close(10.0, "terminal_tool_completed")
                         except Exception as e:
                             self._pending_tool_calls = 0
                             print(f">>> [BrowserWS ERROR] Failed to send tool response: {repr(e)}", flush=True)
@@ -357,8 +376,8 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                     if getattr(sc, "input_transcription", None):
                         t = sc.input_transcription
                         if hasattr(t, "text") and t.text:
-                            print(f"[BrowserWS] [User] {t.text}", flush=True)
-                            self._call_history.append({"role": "user", "text": t.text})
+                            if self._record_user_transcript(t.text):
+                                print(f"[BrowserWS] [User] {_clean_transcript_text(t.text)}", flush=True)
 
                     # Track model transcription (voice) for high-fidelity audio history
                     if getattr(sc, "output_transcription", None):
@@ -409,12 +428,19 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                             # Check if a terminal tool was ever successfully called
                             terminal_tool_called = any(
                                 h.get("tool_name") in ["book_appointment", "place_order"]
+                                and not (
+                                    isinstance(h.get("tool_result"), dict)
+                                    and h["tool_result"].get("error")
+                                )
                                 for h in self._call_history
                             ) or getattr(self, "_booking_state", None) == "booked"
 
                             has_confirmed = getattr(self, "_booking_state", None) == "confirmed"
 
-                            if goodbye_detected:
+                            if terminal_tool_called and self._pending_tool_calls == 0:
+                                print("[BrowserWS] Terminal booking/order completed — scheduling disconnect after final response.", flush=True)
+                                self._schedule_auto_close(6.0, "terminal_response_completed")
+                            elif goodbye_detected:
                                 if self._pending_tool_calls > 0:
                                     print(f"[BrowserWS] Model said goodbye but {self._pending_tool_calls} tool call(s) pending — NOT disconnecting.", flush=True)
                                 elif has_confirmed and not terminal_tool_called:
@@ -422,12 +448,11 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                                     self._should_end_call = False
                                 else:
                                     print(f"[BrowserWS] Detected goodbye — scheduling disconnect.", flush=True)
-                                    self._should_end_call = True
+                                    self._schedule_auto_close(6.0, "goodbye_detected")
                             self._current_agent_turn = ""
 
                         if self._should_end_call:
-                            import asyncio
-                            asyncio.create_task(self._delayed_close(6.0))
+                            self._schedule_auto_close(6.0, "call_marked_complete")
 
         except ConnectionClosed as exc:
             print(f"[BrowserWS] Browser receive loop closed: {exc}", flush=True)

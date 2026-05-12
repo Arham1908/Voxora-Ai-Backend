@@ -61,6 +61,14 @@ AGENTS = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# WhatsApp call aliases: sara → restaurant, zara → healthcare
+# These allow ws://localhost:8000/ws/voice/sara/ and .../zara/ to work
+# ---------------------------------------------------------------------------
+# AGENTS["sara"] = {**AGENTS["restaurant"], "id": "sara", "name": "Sara (WhatsApp)"}
+# AGENTS["zara"] = {**AGENTS["healthcare"], "id": "zara", "name": "Zara (WhatsApp)"}
+
+
 
 def get_agent(agent_id: str) -> dict | None:
     """Return the agent config dict, or None if not found."""
