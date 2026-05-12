@@ -1,5 +1,5 @@
 from django.shortcuts import render
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework import status
 from django.views.decorators.csrf import csrf_exempt
@@ -12,9 +12,12 @@ from rest_framework.views import APIView
 from datetime import datetime, timedelta, date as today_date
 from kfc_api.pagination import paginate_queryset
 import requests
+from rest_framework.permissions import AllowAny
+
 import os
 @csrf_exempt
 @api_view(['GET', 'POST', 'PATCH'])
+@permission_classes([AllowAny])
 def schedule(request):
     if request.method == "GET":
         schedules = Schedule.objects.all()
@@ -69,6 +72,7 @@ def schedule(request):
         }, status=status.HTTP_400_BAD_REQUEST)
 
 class AppointmentCreateView(APIView):
+    permission_classes = [AllowAny]
 
     def post(self, request):
         # 0. Idempotency Check: Handle Gemini issuing duplicate tool calls on timeout
@@ -182,7 +186,7 @@ class AppointmentCreateView(APIView):
 
 
 class AppointmentCancelView(APIView):
-
+    permission_classes = [AllowAny]
 
     def patch(self, request, pk):
         appointment = Appointment.objects.get(pk=pk)
@@ -197,6 +201,7 @@ class AppointmentCancelView(APIView):
 
 
 class AppointmentListView(APIView):
+    permission_classes = [AllowAny]
 
     def get(self, request):
         appointments = Appointment.objects.all().order_by('-created_at')
@@ -222,6 +227,7 @@ class AppointmentListView(APIView):
 
 
 class AvailableSlotsView(APIView):
+    permission_classes = [AllowAny]
     
     def get(self, request):
         date_str = request.query_params.get('date')  

@@ -1,4 +1,4 @@
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view,permission_classes
 from rest_framework.response import Response
 from rest_framework import status
 from django.views.decorators.csrf import csrf_exempt
@@ -7,10 +7,12 @@ from .models import Order, Call, Menu, Category
 from .services import ElevenLabsService
 from kfc_api.pagination import paginate_queryset
 import uuid
+from rest_framework.permissions import AllowAny
 
 
 @csrf_exempt
 @api_view(['GET', 'POST', 'DELETE'])
+@permission_classes([AllowAny])
 def menu(request):
     """Return the KFC menu items"""
     if request.method == "POST":
@@ -68,6 +70,8 @@ def menu(request):
 
 @csrf_exempt
 @api_view(['GET', 'POST', 'DELETE'])
+@permission_classes([AllowAny])
+
 def categories(request):
     """Manage Menu Categories"""
     if request.method == "POST":
@@ -106,6 +110,8 @@ def categories(request):
 
 @csrf_exempt
 @api_view(["GET", "POST"])
+@permission_classes([AllowAny])
+
 def orders(request):
     # POST create new order
     if request.method == "POST":
@@ -130,6 +136,8 @@ def orders(request):
 
 @csrf_exempt
 @api_view(["GET"])
+@permission_classes([AllowAny])
+
 def call_list(request):
     """
     List all calls with optional filters.
@@ -156,6 +164,8 @@ def call_list(request):
 
 @csrf_exempt
 @api_view(["POST"])
+@permission_classes([AllowAny])
+
 def initiate_call(request):
     """
     Initiate an outbound phone call to a customer using ElevenLabs agent.
@@ -226,6 +236,8 @@ def initiate_call(request):
 
 @csrf_exempt
 @api_view(["POST"])
+@permission_classes([AllowAny])
+
 def get_chat_token(request):
     """
     Generate a signed token for browser-based voice chat.
@@ -342,6 +354,7 @@ def elevenlabs_webhook(request):
 
 @csrf_exempt
 @api_view(["GET"])
+@permission_classes([AllowAny])
 def call_status(request, conversation_id):
     """
     Get the status of a specific call.

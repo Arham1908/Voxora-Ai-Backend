@@ -4,13 +4,15 @@ from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from .agents.registry import list_agents_public
-
+from rest_framework.permissions import AllowAny
+from rest_framework.decorators import api_view,permission_classes
 
 # ---------------------------------------------------------------------------
 # Twilio webhook views (kept for URL compatibility)
 # ---------------------------------------------------------------------------
 
 @csrf_exempt
+@permission_classes([AllowAny])
 def incoming_call(request):
     """Twilio incoming call webhook — returns TwiML to connect to media stream."""
     # Railway domain, dev tunnel, or ngrok URL
@@ -39,6 +41,7 @@ def call_status(request):
 # ---------------------------------------------------------------------------
 
 @api_view(["GET"])
+@permission_classes([AllowAny])
 def agents_list(request):
     """Return public list of all available voice agents with their config."""
     return Response(list_agents_public())

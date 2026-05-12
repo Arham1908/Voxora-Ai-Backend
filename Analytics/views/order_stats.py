@@ -4,8 +4,10 @@ from django.db.models import Sum, Count
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from menu.models import Order, Menu
+from rest_framework.permissions import AllowAny
 
 class order_stats(APIView):
+    permission_classes = [AllowAny]
 
     def get(self, request, *args, **kwargs):
         today = timezone.now().date()

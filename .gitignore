@@ -84,3 +84,9 @@ test_ssl.py
 seed_demo_orders.py
 seed_smash_burger_menu.py
 PROJECT_CONTEXT.txt
+/graphify-out
+graph.json
+graph.html
+.graphify_root
+/docs
+.codex

@@ -5,11 +5,14 @@ from rest_framework.response import Response
 from rest_framework import status
 from ..models import GeminiSessionCost, CallHistory
 from ..serializers import GeminiSessionCostSerializer, CallHistorySerializer
+from rest_framework.permissions import AllowAny
 
 class GeminiCostStatsView(APIView):
     """
     API view to return aggregated Gemini cost and token statistics.
     """
+    permission_classes = [AllowAny]
+
     def get(self, request, *args, **kwargs):
         today = timezone.now().date()
         
@@ -63,6 +66,8 @@ class GeminiCallHistoryView(APIView):
     """
     API view to return list of call history from Gemini sessions.
     """
+    permission_classes = [AllowAny]
+
     def get(self, request, *args, **kwargs):
         # We want to list all CallHistory records, joined with their cost if available
         calls = CallHistory.objects.all().order_by('-created_at')
