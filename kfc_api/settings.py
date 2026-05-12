@@ -122,8 +122,8 @@ WSGI_APPLICATION = 'kfc_api.wsgi.application'
 ASGI_APPLICATION = 'kfc_api.asgi.application'
 
 
-Database
-https://docs.djangoproject.com/en/5.2/ref/settings/#databases
+# Database
+# https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
 DATABASES = {
     'default': {
