@@ -619,7 +619,31 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                                 for h in self._call_history
                             ) or getattr(self, "_booking_state", None) == "booked"
 
-                            has_confirmed = getattr(self, "_booking_state", None) == "confirmed"
+                            # Detect if order details were being collected but tool
+                            # was never called — covers "booking_requested" state (set
+                            # when place_order is first attempted) AND broader heuristic
+                            # for when the model spoke order-related filler but skipped
+                            # the actual tool invocation.
+                            order_in_progress = (
+                                getattr(self, "_booking_state", None) in ("booking_requested", "confirmed")
+                            )
+                            # Also check if the agent spoke order-placement filler phrases
+                            # (indicating intent to call place_order) in this turn or any
+                            # prior agent turn — if so the tool MUST have been called.
+                            _ORDER_FILLER_PHRASES = [
+                                "order laga",
+                                "placing your order",
+                                "placing the order",
+                                "order place",
+                                "order enter kar",
+                                "order system mein",
+                                "main aap ka order",
+                            ]
+                            agent_spoke_order_filler = any(
+                                any(phrase in h.get("text", "").lower() for phrase in _ORDER_FILLER_PHRASES)
+                                for h in self._call_history
+                                if h.get("role") == "agent"
+                            )
 
                             if terminal_tool_called and self._pending_tool_calls == 0:
                                 print("[BrowserWS] Terminal booking/order completed — scheduling disconnect after final response.", flush=True)
@@ -627,9 +651,33 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                             elif goodbye_detected:
                                 if self._pending_tool_calls > 0:
                                     print(f"[BrowserWS] Model said goodbye but {self._pending_tool_calls} tool call(s) pending — NOT disconnecting.", flush=True)
-                                elif has_confirmed and not terminal_tool_called:
-                                    print(f"[BrowserWS] CRITICAL: User confirmed but terminal tool was NEVER called! Blocking disconnect.", flush=True)
+                                elif (order_in_progress or agent_spoke_order_filler) and not terminal_tool_called:
+                                    # CRITICAL SAFETY NET: The model said goodbye but the
+                                    # order/booking was never actually placed via the API.
+                                    # Force-nudge the model to call the tool NOW.
+                                    print(
+                                        f"[BrowserWS] CRITICAL: Order/booking in progress "
+                                        f"(state={getattr(self, '_booking_state', '')}, "
+                                        f"filler_spoken={agent_spoke_order_filler}) but "
+                                        f"terminal tool was NEVER called! Blocking disconnect "
+                                        f"and nudging model to call place_order.",
+                                        flush=True,
+                                    )
                                     self._should_end_call = False
+                                    # Nudge Gemini to actually invoke the tool
+                                    try:
+                                        await session.send_realtime_input(
+                                            text=(
+                                                "[System: CRITICAL — You said goodbye but you "
+                                                "did NOT call the place_order tool. The order has "
+                                                "NOT been saved. You MUST call the place_order "
+                                                "tool RIGHT NOW with all the order details before "
+                                                "ending this call. Do NOT say goodbye again until "
+                                                "the tool has been called and you received a result.]"
+                                            )
+                                        )
+                                    except Exception as nudge_exc:
+                                        print(f"[BrowserWS] Nudge to call tool failed: {nudge_exc}", flush=True)
                                 else:
                                     print(f"[BrowserWS] Detected goodbye — scheduling disconnect.", flush=True)
                                     self._schedule_auto_close(6.0, "goodbye_detected")

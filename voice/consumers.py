@@ -1528,17 +1528,54 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
                                 for h in self._call_history
                             )
 
+                            # Detect if order was in progress but tool was never called
+                            _ORDER_FILLER_PHRASES = [
+                                "order laga", "placing your order", "placing the order",
+                                "order place", "order enter kar", "order system mein",
+                                "main aap ka order",
+                            ]
+                            agent_spoke_order_filler = any(
+                                any(phrase in h.get("text", "").lower() for phrase in _ORDER_FILLER_PHRASES)
+                                for h in self._call_history
+                                if h.get("role") == "agent"
+                            )
+                            order_in_progress = (
+                                getattr(self, "_booking_state", None) in ("booking_requested", "confirmed")
+                            )
+
                             if goodbye_detected:
-                                print(f"[WS] Detected call end greeting (Allah Hafiz / Goodbye) — scheduling disconnect.", flush=True)
-                                # Signal WhatsApp/SIP call end if this is a WebRTC/external call
-                                try:
-                                    await self.send(text_data=json.dumps({
-                                        "event": "call_end",
-                                        "reason": "goodbye_detected"
-                                    }))
-                                except Exception:
-                                    pass
-                                self._should_end_call = True
+                                if (order_in_progress or agent_spoke_order_filler) and not terminal_tool_called:
+                                    # CRITICAL: Model said goodbye but order was never placed
+                                    print(
+                                        f"[WS] CRITICAL: Order in progress but terminal tool "
+                                        f"NEVER called! Blocking disconnect and nudging model.",
+                                        flush=True,
+                                    )
+                                    self._should_end_call = False
+                                    try:
+                                        await session.send_realtime_input(
+                                            text=(
+                                                "[System: CRITICAL — You said goodbye but you "
+                                                "did NOT call the place_order tool. The order has "
+                                                "NOT been saved. You MUST call the place_order "
+                                                "tool RIGHT NOW with all the order details before "
+                                                "ending this call. Do NOT say goodbye again until "
+                                                "the tool has been called and you received a result.]"
+                                            )
+                                        )
+                                    except Exception as nudge_exc:
+                                        print(f"[WS] Nudge to call tool failed: {nudge_exc}", flush=True)
+                                else:
+                                    print(f"[WS] Detected call end greeting (Allah Hafiz / Goodbye) — scheduling disconnect.", flush=True)
+                                    # Signal WhatsApp/SIP call end if this is a WebRTC/external call
+                                    try:
+                                        await self.send(text_data=json.dumps({
+                                            "event": "call_end",
+                                            "reason": "goodbye_detected"
+                                        }))
+                                    except Exception:
+                                        pass
+                                    self._should_end_call = True
                             else:
                                 # Agent spoke but no goodbye — start silence timeout for next user turn
                                 self._schedule_silence_check()
