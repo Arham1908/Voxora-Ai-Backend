@@ -440,6 +440,7 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
         self._current_agent_turn = ""
         self._should_end_call  = False
         self._auto_close_task = None
+        self._auto_close_reason = ""  # Track why auto-close was scheduled (for selective cancellation)
         self._last_session_handle = None
         self._booking_state = ""  # Tracks appointment/order booking status (e.g., "booked", "confirmed")
         self._pending_tool_calls = 0  # Track pending tool call count
@@ -448,6 +449,10 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
         self._twilio_call_sid = None
         self._twilio_ready = asyncio.Event()
         self._twilio_media_count = 0
+        self._last_user_input_time = None  # Track last user speech for silence detection
+        self._silence_check_task = None  # Silence timeout task
+        self._agent_speaking = False  # Flag: agent is mid-response, don't interrupt
+        self._consecutive_nudges = 0  # Cap consecutive nudges to prevent infinite loops
 
     def _parse_query_params(self) -> dict:
         qs = self.scope.get("query_string", b"").decode("utf-8")
@@ -539,6 +544,14 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
                 if session is None:
                     self._clear_session_state()
                     return
+                    
+                # Agent State / Tool Lock: buffer incoming audio while a tool is executing
+                if getattr(self, "_pending_tool_calls", 0) > 0:
+                    if not hasattr(self, '_audio_queue'):
+                        self._audio_queue = bytearray()
+                    self._audio_queue.extend(pcm_16k)
+                    return
+                    
                 try:
                     await session.send_realtime_input(
                         audio=types.Blob(
@@ -717,7 +730,12 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
             missing_fields.append("phone")
 
         email = str(tool_args.get("email") or "").strip().casefold()
-        if "@" not in email or email not in user_text_email:
+        # Loose email check: valid format + (full match OR domain visible in transcript)
+        # Allows emails spelled digit-by-digit which may have transcription artifacts like {dot}
+        has_at = "@" in email
+        domain = email.split("@")[1] if has_at else ""
+        email_in_transcript = email in user_text_email or (domain and domain in user_text_email)
+        if not has_at or not email_in_transcript:
             missing_fields.append("email")
 
         for field in ("date", "start_time", "end_time"):
@@ -750,6 +768,94 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
     async def _on_gemini_ready(self):
         """Hook for subclasses to run after Gemini session opens. Default: no-op."""
         pass
+
+    def _schedule_silence_check(self):
+        """Schedule a silence timeout. If no user input by then, auto-prompt."""
+        if self._silence_check_task and not self._silence_check_task.done():
+            return  # Already pending — don't stack
+
+        self._silence_check_task = asyncio.create_task(self._silence_timeout_handler())
+        self._tasks.append(self._silence_check_task)
+
+    def _cancel_silence_check(self):
+        """Cancel any pending silence timeout."""
+        if self._silence_check_task and not self._silence_check_task.done():
+            self._silence_check_task.cancel()
+            self._silence_check_task = None
+
+    def _mark_user_input(self):
+        """Record that the user just provided input. Resets consecutive nudge counter.
+
+        Also cancels any pending *silence-based* auto-close — the user broke the
+        silence so the session should stay alive.
+        """
+        self._last_user_input_time = time.time()
+        self._consecutive_nudges = 0
+        # If a silence-timeout auto-close is pending, cancel it — user is active
+        self._cancel_auto_close_if_silence()
+
+    def _cancel_auto_close_if_silence(self):
+        """Cancel a pending auto-close ONLY if it was triggered by silence timeout.
+
+        Terminal-tool, goodbye, and go-away auto-closes are never cancelled.
+        """
+        if (
+            getattr(self, "_auto_close_reason", "") == "silence_timeout_max_nudges"
+            and self._auto_close_task
+            and not self._auto_close_task.done()
+        ):
+            self._auto_close_task.cancel()
+            self._auto_close_task = None
+            self._auto_close_reason = ""
+            self._should_end_call = False
+            print("[WS] User spoke — cancelled pending silence auto-close", flush=True)
+
+    async def _silence_timeout_handler(self):
+        """Wait, then nudge Gemini if the user has been silent."""
+        # Progressive timeouts: quick first check, longer for subsequent
+        _NUDGE_TIMEOUTS = [4.0, 8.0, 12.0]
+        idx = min(self._consecutive_nudges, len(_NUDGE_TIMEOUTS) - 1)
+        timeout = _NUDGE_TIMEOUTS[idx]
+        await asyncio.sleep(timeout)
+
+        if self._disconnecting or self.gemini_session is None:
+            return
+
+        # Check if user spoke since we started waiting
+        time_since_input = time.time() - (self._last_user_input_time or 0)
+
+        if time_since_input < 2.0:
+            print(f"[WS] User spoke recently ({time_since_input:.1f}s ago) — skipping nudge", flush=True)
+            return
+
+        if self._pending_tool_calls > 0:
+            print(f"[WS] Tool call pending ({self._pending_tool_calls}) — skipping nudge", flush=True)
+            return
+
+        if self._agent_speaking:
+            print(f"[WS] Agent still speaking — skipping nudge", flush=True)
+            return
+
+        if getattr(self, "_booking_state", None) == "booked":
+            print(f"[WS] Terminal tool already completed — suppressing nudge", flush=True)
+            return
+
+        # After 3 consecutive nudges with no user response, close the session
+        if self._consecutive_nudges >= 3:
+            print(f"[WS] 3 consecutive nudges unanswered — auto-closing idle session", flush=True)
+            # Use a longer delay (3s) to give the user a last chance to speak.
+            # If they do, _mark_user_input will cancel this auto-close.
+            self._schedule_auto_close(3.0, "silence_timeout_max_nudges")
+            return
+
+        self._consecutive_nudges += 1
+        print(f"[WS] Silence detected ({timeout:.1f}s) — nudge #{self._consecutive_nudges}", flush=True)
+        try:
+            await self.gemini_session.send_realtime_input(
+                text="[System: The user has been silent. Gently prompt them to continue.]"
+            )
+        except Exception as e:
+            print(f"[WS] Nudge failed: {e}", flush=True)
 
     # ------------------------------------------------------------------
     # Override hooks — subclasses implement these for dynamic config
@@ -795,6 +901,17 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
 
     async def _execute_tool(self, tool_name: str, tool_args: dict) -> dict:
         from .agents.healthcare import execute_tool
+        
+        if tool_name == "menu":
+            if getattr(self, "_cached_menu", None):
+                print(f"[WS] ⚡ Returning cached menu for duplicate tool call.", flush=True)
+                return self._cached_menu
+                
+            result = await execute_tool(tool_name, tool_args)
+            if isinstance(result, dict) and result.get("success"):
+                self._cached_menu = result
+            return result
+            
         return await execute_tool(tool_name, tool_args)
 
     # ------------------------------------------------------------------
@@ -811,7 +928,8 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
 
         Covers:
         - 503 / Service Unavailable (model overloaded)
-        - 1011 Resource Exhausted (quota exceeded on the Live API)
+        - 1011 Resource Exhausted / Internal Error (quota or server crash)
+        - 429 Rate Limit
         """
         err_str = str(exc).lower()
         err_type = type(exc).__name__.lower()
@@ -826,6 +944,9 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
             "quota",
             "rate limit",
             "429",
+            # Internal server errors — transient, worth retrying on Vertex
+            "1011",
+            "internal error",
         )
         return any(t in err_str for t in triggers) or "serviceunavailable" in err_type
 
@@ -959,8 +1080,9 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
                 parts=[types.Part(text=system_prompt)]
             ),
             response_modalities=["AUDIO"],
-            temperature=0.2,
+            temperature=0.8,  # Increased from 0.2 for faster, more natural responses
             tools=tools,
+            # enable_affective_dialog=True,
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
@@ -982,10 +1104,19 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     disabled=False,
-                    # LOW start sensitivity = ignore background noise, only react to clear speech
-                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
-                    # LOW end sensitivity = allow natural pauses without cutting off mid-sentence
-                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_LOW,
+                    # HIGH start sensitivity = catch low-volume speech, accept more audio input
+                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                    # HIGH end sensitivity = commit transcript quickly on silence;
+                    # safe now that AEC + mic gating prevent echo from reaching Gemini.
+                    # LOW was too sticky — echo loops caused continuous "speech" and
+                    # input_transcription never fired.
+                    end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
+                    # Capture full word onset — iOS mic audio needs more
+                    # padding because the initial samples are very quiet.
+                    prefix_padding_ms=100,
+                    # Don't cut mid-sentence during natural pauses — wait 800ms of
+                    # real silence before committing the speech turn.
+                    silence_duration_ms=800,
                 )
             ),
         )
@@ -1043,6 +1174,8 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
                         except Exception:
                             pass
                     print(f"[WS DEBUG] Greeting done, entering receive loop...", flush=True)
+                    self._mark_user_input()  # seed the timestamp for first silence check
+                    self._schedule_silence_check()  # Start silence timeout after greeting
 
                 try:
                     await self._receive_loop(session)
@@ -1107,6 +1240,14 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
             pcm_data = _load_wav_pcm(greeting_path)
             await self._stream_pcm_to_sip(pcm_data)
             print("[WS] Finished playing cached greeting. Model will wait in silence.", flush=True)
+            # Signal Gemini that the audio stream was paused during greeting
+            # playback (mic was muted). This flushes any stale cached audio
+            # context so VAD starts clean for the user's first utterance.
+            try:
+                await session.send_realtime_input(audio_stream_end=True)
+                print("[WS] Sent audio_stream_end after cached greeting", flush=True)
+            except Exception as e:
+                print(f"[WS] audio_stream_end failed (non-fatal): {e}", flush=True)
             # We explicitly do NOT send a user text message here, because doing so
             # forces Gemini Live to generate a verbal text/audio response immediately.
             # The context is now provided via system_instruction!
@@ -1181,7 +1322,12 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
 
         try:
             while not self._disconnecting:
+                print(f"[WS] Waiting for response from Gemini...", flush=True)
                 async for response in session.receive():
+                    print(f"[WS] Received response: {type(response).__name__}", flush=True)
+                    has_tool_call = getattr(response, "tool_call", None) is not None
+                    has_server_content = getattr(response, "server_content", None) is not None
+                    print(f"[WS DEBUG] Response has: tool_call={has_tool_call}, server_content={has_server_content}", flush=True)
                     sc = getattr(response, "server_content", None)
                     tc = getattr(response, "tool_call", None)
                     
@@ -1236,6 +1382,7 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
                     if getattr(response, "go_away", None):
                         go_away = response.go_away
                         logger.warning("[WS] Received GoAway message. Time left: %ss", go_away.time_left)
+                        print(f"[WS] GOAWAY from Gemini! Time left: {go_away.time_left}s", flush=True)
                         self._schedule_auto_close(1.0, "gemini_go_away")
                         return
 
@@ -1245,12 +1392,20 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
 
                         print(f"[WS DEBUG] turn_complete={getattr(sc, 'turn_complete', False)}, interrupted={getattr(sc, 'interrupted', False)}", flush=True)
                         if getattr(sc, "model_turn", None):
+                            print(f"[WS DEBUG] model_turn present with {len(sc.model_turn.parts)} parts", flush=True)
                             for p in sc.model_turn.parts:
                                 if getattr(p, "text", None):
                                     print(f"[WS DEBUG] Model Text: {p.text}", flush=True)
+                                if getattr(p, "inline_data", None):
+                                    print(f"[WS DEBUG] Model Audio: {len(p.inline_data.data)} bytes", flush=True)
+                        else:
+                            print(f"[WS DEBUG] No model_turn in response", flush=True)
 
                     tool_call = getattr(response, "tool_call", None)
                     if tool_call:
+                        # Cancel silence timeout while processing tool calls
+                        self._cancel_silence_check()
+
                         self._pending_tool_calls += len(tool_call.function_calls)
                         function_responses = []
                         for fc in tool_call.function_calls:
@@ -1286,10 +1441,30 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
                             )
                             self._pending_tool_calls = 0  # Tool calls completed
                             print(f"[WS] Successfully sent tool responses for {len(function_responses)} calls", flush=True)
+                            
+                            # Flush any audio queued while the tool was running
+                            if hasattr(self, '_audio_queue') and self._audio_queue:
+                                print(f"[WS] Flushing {len(self._audio_queue)} bytes of queued audio to Gemini", flush=True)
+                                try:
+                                    await session.send_realtime_input(
+                                        audio=types.Blob(
+                                            data=bytes(self._audio_queue),
+                                            mime_type=f"audio/pcm;rate={MIC_RATE}",
+                                        )
+                                    )
+                                except Exception as e:
+                                    print(f">>> [WS ERROR] Failed to flush audio queue: {e}", flush=True)
+                                self._audio_queue.clear()
+                                
+                            # NOTE: Do NOT schedule silence check here — Gemini is about to
+                            # speak the verbal response. Silence is scheduled from turn_complete.
                         except Exception as e:
                             self._pending_tool_calls = 0
                             print(f">>> [WS ERROR] Failed to send tool response to Gemini: {repr(e)}", flush=True)
+                            import traceback
+                            traceback.print_exc()
                         # Continue to wait for Gemini's response after tool results
+                        print(f"[WS] Continuing receive loop after tool response...", flush=True)
                         continue
 
                     sc = getattr(response, "server_content", None)
@@ -1301,6 +1476,8 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
                         if hasattr(t, "text") and getattr(t, "text", None):
                             if self._record_user_transcript(t.text):
                                 print(f"[WS] [User] {_clean_transcript_text(t.text)}", flush=True)
+                                self._mark_user_input()  # Record actual user speech time
+                                self._cancel_silence_check()  # Cancel pending timer
 
                     if getattr(sc, "output_transcription", None):
                         t = sc.output_transcription
@@ -1320,11 +1497,17 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
 
                             inline = getattr(part, "inline_data", None)
                             if inline and inline.data:
+                                if not self._agent_speaking:
+                                    print(f"[WS] Agent START speaking (audio chunk)", flush=True)
+                                self._agent_speaking = True  # Agent is streaming audio
                                 if self._save_as_greeting:
                                     greeting_buffer.extend(inline.data)
                                 await self._stream_pcm_to_sip(inline.data)
 
                     if getattr(sc, "turn_complete", False) or getattr(sc, "interrupted", False):
+                        if self._agent_speaking:
+                            print(f"[WS] Agent STOP speaking (turn_complete={getattr(sc, 'turn_complete', False)})", flush=True)
+                        self._agent_speaking = False  # Turn ended, agent finished speaking
                         if self._save_as_greeting and greeting_buffer:
                             save_path = self._get_greeting_path()
                             _save_wav(bytes(greeting_buffer), save_path, OUT_RATE)
@@ -1356,10 +1539,15 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
                                 except Exception:
                                     pass
                                 self._should_end_call = True
+                            else:
+                                # Agent spoke but no goodbye — start silence timeout for next user turn
+                                self._schedule_silence_check()
                             self._current_agent_turn = ""
 
                         if self._should_end_call:
                             asyncio.create_task(self._delayed_close(6.0))
+
+                print(f"[WS] Receive loop ended — no more responses from Gemini", flush=True)
 
         except ConnectionClosed as exc:
             logger.info(
@@ -1367,6 +1555,11 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
                 getattr(exc, "code", None),
                 getattr(exc, "reason", ""),
             )
+            print(f"[WS] ConnectionClosed exception: code={getattr(exc, 'code', None)}", flush=True)
+        except Exception as exc:
+            print(f"[WS ERROR] Unexpected exception in receive loop: {type(exc).__name__}: {exc}", flush=True)
+            import traceback
+            traceback.print_exc()
 
     async def _delayed_close(self, delay: float):
         await self._delayed_close_with_reason(delay, "auto_end")
@@ -1378,6 +1571,7 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
             return
 
         self._should_end_call = True
+        self._auto_close_reason = reason  # Track reason so we know if it's cancellable
         self._auto_close_task = asyncio.create_task(
             self._delayed_close_with_reason(delay, reason)
         )

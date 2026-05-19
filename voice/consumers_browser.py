@@ -5,6 +5,7 @@
 #   - URL path: /ws/voice/<agent_id>/
 #   - Query string: ?voice=Aoede&language=ur-PK
 
+import time
 from pathlib import Path
 from google.genai import types
 from websockets.exceptions import ConnectionClosed
@@ -42,12 +43,28 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
         self._voice = "Aoede"
         self._language = "ur-PK"
         self._heartbeat_task = None
+        self._diag_frame_count = 0       # Total audio frames received
+        self._diag_bytes_total = 0       # Total audio bytes received
+        self._diag_text_count = 0        # Total text messages received
+        self._diag_user_agent = ""       # Captured at connect time
 
     # ------------------------------------------------------------------
     # WebSocket lifecycle — resolve agent config first
     # ------------------------------------------------------------------
 
     async def connect(self):
+        # ── DIAGNOSTIC: Capture User-Agent and connection metadata ──
+        headers = dict(self.scope.get("headers", []))
+        self._diag_user_agent = headers.get(b"user-agent", b"").decode(errors="replace")
+        origin = headers.get(b"origin", b"").decode(errors="replace")
+        print(
+            # f"🔌 [BrowserWS] CONNECTED — channel={self.channel_name}\n"
+            f"   📱 User-Agent: {self._diag_user_agent}\n"
+            f"   🌐 Origin: {origin}\n"
+            f"   🔗 Path: {self.scope.get('path', '?')}",
+            flush=True,
+        )
+
         # Resolve agent_id from URL kwargs (set by routing.py)
         agent_id = self.scope["url_route"]["kwargs"].get("agent_id", "healthcare")
         self._agent_cfg = get_agent(agent_id)
@@ -62,10 +79,10 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
         self._voice = params.get("voice", self._agent_cfg["default_voice"])
         self._language = params.get("language", self._agent_cfg["default_language"])
 
-        # print(
-        #     f"[BrowserWS] Agent='{agent_id}' Voice='{self._voice}' Language='{self._language}'",
-        #     flush=True,
-        # )
+        print(
+            f"   🤖 Agent='{agent_id}' Voice='{self._voice}' Language='{self._language}'",
+            flush=True,
+        )
 
         # Delegate to parent (creates Gemini client, starts session task)
         await super().connect()
@@ -147,6 +164,16 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
 
     async def _execute_tool(self, tool_name: str, tool_args: dict) -> dict:
         """Delegate tool execution to the active agent's executor."""
+        if tool_name == "menu":
+            if getattr(self, "_cached_menu", None):
+                print(f"[BrowserWS] ⚡ Returning cached menu for duplicate tool call.", flush=True)
+                return self._cached_menu
+                
+            result = await self._agent_cfg["execute_tool"](tool_name, tool_args)
+            if isinstance(result, dict) and result.get("success"):
+                self._cached_menu = result
+            return result
+            
         return await self._agent_cfg["execute_tool"](tool_name, tool_args)
 
     # ------------------------------------------------------------------
@@ -154,18 +181,54 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
     # ------------------------------------------------------------------
 
     async def receive(self, bytes_data=None, text_data=None):
+        # ── DIAGNOSTIC: Log EVERYTHING entering receive() ──
+        if text_data:
+            self._diag_text_count += 1
+            print(
+                f"📥 [BrowserWS] RECEIVE text #{self._diag_text_count}: "
+                f"{text_data[:200] if text_data else None}",
+                flush=True,
+            )
+
+        # Log first 5 frames, then every 100th
+        if bytes_data:
+            self._diag_frame_count += 1
+            self._diag_bytes_total += len(bytes_data)
+            if self._diag_frame_count <= 5 or self._diag_frame_count % 100 == 0:
+                print(
+                    f"📥 [BrowserWS] RECEIVE audio frame #{self._diag_frame_count}: "
+                    f"len={len(bytes_data)} bytes, type={type(bytes_data).__name__}, "
+                    f"total_bytes_so_far={self._diag_bytes_total}, "
+                    f"session_ready={self._session_ready.is_set()}, "
+                    f"disconnecting={self._disconnecting}, "
+                    f"gemini_session={'alive' if self.gemini_session else 'None'}, "
+                    f"pending_tools={self._pending_tool_calls}, "
+                    f"UA_short={'iPhone' if 'iPhone' in self._diag_user_agent else 'Android' if 'Android' in self._diag_user_agent else 'Desktop'}",
+                    flush=True,
+                )
+
+        if not bytes_data and not text_data:
+            print(f"📥 [BrowserWS] RECEIVE called with NOTHING (bytes=None, text=None)", flush=True)
+            return
+
         if self._transport == "twilio":
             return await super().receive(bytes_data=bytes_data, text_data=text_data)
 
         if self._disconnecting or not bytes_data:
+            if self._disconnecting and bytes_data:
+                print(f"⚠️ [BrowserWS] Dropping audio — disconnecting", flush=True)
             return
         if len(bytes_data) % 2 != 0:
+            print(f"⚠️ [BrowserWS] Dropping odd-length frame: {len(bytes_data)} bytes", flush=True)
             return
         if not self._session_ready.is_set():
+            if self._diag_frame_count <= 5:
+                print(f"⚠️ [BrowserWS] Dropping frame — session NOT ready yet", flush=True)
             return
 
         session = self.gemini_session
         if session is None:
+            print(f"⚠️ [BrowserWS] Dropping frame — gemini_session is None", flush=True)
             self._clear_session_state()
             return
 
@@ -174,11 +237,17 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
             self._debug_mic_buffer = bytearray()
         self._debug_mic_buffer.extend(bytes_data)
 
+        # Agent State / Tool Lock: buffer incoming audio while a tool is executing
+        if self._pending_tool_calls > 0:
+            if not hasattr(self, '_audio_queue'):
+                self._audio_queue = bytearray()
+            self._audio_queue.extend(bytes_data)
+            return
+
         try:
             if not hasattr(self, '_recv_count'):
                 self._recv_count = 0
             self._recv_count += 1
-                  # print(f"[BrowserWS] Processed {self._recv_count} audio frames from browser...", flush=True)
 
             await session.send_realtime_input(
                 audio=types.Blob(
@@ -187,12 +256,38 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                 )
             )
         except ConnectionClosed as exc:
-            # print(f">>> [BrowserWS] Gemini session closed while forwarding audio: {exc}", flush=True)
+            print(f"❌ [BrowserWS] ConnectionClosed while forwarding audio: {exc}", flush=True)
             self._clear_session_state()
         except Exception as e:
             print(f">>> [BrowserWS] Error forwarding audio to Gemini: {e}", flush=True)
 
     async def disconnect(self, close_code):
+        # ── DIAGNOSTIC: Summarize the entire session on disconnect ──
+        _CLOSE_CODES = {
+            1000: "Normal close",
+            1001: "Browser tab closed / navigated away",
+            1006: "Abnormal — network drop or timeout",
+            1009: "Message too large",
+            1011: "Server error",
+            4004: "Unknown agent_id",
+        }
+        code_meaning = _CLOSE_CODES.get(close_code, "Unknown")
+        ua_tag = (
+            "iPhone" if "iPhone" in self._diag_user_agent
+            else "Android" if "Android" in self._diag_user_agent
+            else "Desktop"
+        )
+        print(
+            f"❌ [BrowserWS] DISCONNECTED\n"
+            f"   📱 Device: {ua_tag}\n"
+            f"   🔢 Close code: {close_code} ({code_meaning})\n"
+            f"   🎤 Total audio frames received: {self._diag_frame_count}\n"
+            f"   📦 Total audio bytes received: {self._diag_bytes_total}\n"
+            f"   💬 Total text messages received: {self._diag_text_count}\n"
+            f"   📱 Full UA: {self._diag_user_agent[:120]}",
+            flush=True,
+        )
+
         if self._heartbeat_task and not self._heartbeat_task.done():
             self._heartbeat_task.cancel()
         if hasattr(self, '_debug_mic_buffer') and len(self._debug_mic_buffer) > 0:
@@ -306,11 +401,20 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                         self._schedule_auto_close(1.0, "gemini_go_away")
                         return
 
-                    # ── Tool call handling ──────────────────────────────────
                     tool_call = getattr(response, "tool_call", None)
                     if tool_call:
                         self._pending_tool_calls += len(tool_call.function_calls)
                         terminal_tool_completed = False
+                        # Cancel any pending silence timer — we're entering tool processing
+                        self._cancel_silence_check()
+                        # Flush any partial audio the browser has already buffered
+                        # (e.g. "Let me check..." spoken before the tool fires).
+                        # Without this the user hears: partial snippet → pause → full answer.
+                        try:
+                            await self.send(text_data=json.dumps({"event": "clear"}))
+                            print("[BrowserWS] Sent clear to browser (flushing pre-tool audio)", flush=True)
+                        except Exception:
+                            pass
                         # Before tool call, save any pending agent turn to history
                         if self._current_agent_turn:
                             self._call_history.append({"role": "agent", "text": self._current_agent_turn})
@@ -323,6 +427,26 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                             print(f"[BrowserWS] [Tool Call] {tool_name}({tool_args})", flush=True)
 
                             if tool_name in ("book_appointment", "place_order"):
+                                # ── Duplicate terminal tool guard ───────────────
+                                # Silence nudges can cause Gemini to re-confirm and
+                                # re-call the terminal tool. Block the second execution.
+                                if self._booking_state == "booked":
+                                    print(f"[BrowserWS] ⛔ Duplicate {tool_name} blocked — already booked!", flush=True)
+                                    result = {"error": "This order/appointment has already been placed. Do NOT call this tool again."}
+                                    self._call_history.append({
+                                        "role": "tool",
+                                        "tool_name": tool_name,
+                                        "tool_args": tool_args,
+                                        "tool_result": result,
+                                    })
+                                    function_responses.append(
+                                        types.FunctionResponse(
+                                            name=tool_name,
+                                            id=fc.id,
+                                            response={"result": result},
+                                        )
+                                    )
+                                    continue  # skip to next fc
                                 self._booking_state = "booking_requested"
                                 print(f"[BrowserWS] {tool_name} tool requested", flush=True)
 
@@ -354,13 +478,31 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                                 )
                             )
 
+                        if not function_responses:
+                            # All calls were blocked duplicates — nothing to send
+                            self._pending_tool_calls = 0
+                            continue
+
                         try:
                             await session.send_tool_response(function_responses=function_responses)
                             self._pending_tool_calls = 0  # Tool calls completed
                             print(f"[BrowserWS] Successfully sent tool responses for {len(function_responses)} calls", flush=True)
+                            
+                            # Discard audio queued during tool execution — these frames
+                            # are mostly the agent's own echo captured by the mic (since
+                            # the speaker was playing filler audio). Flushing them into
+                            # Gemini right as it starts speaking the tool result creates
+                            # a burst of "user speech" that confuses VAD.
+                            if hasattr(self, '_audio_queue') and self._audio_queue:
+                                print(f"[BrowserWS] Discarding {len(self._audio_queue)} bytes of stale queued audio (tool boundary)", flush=True)
+                                self._audio_queue.clear()
+                            
                             if terminal_tool_completed:
                                 print("[BrowserWS] Terminal tool succeeded — auto-close armed.", flush=True)
                                 self._schedule_auto_close(10.0, "terminal_tool_completed")
+                            # NOTE: Do NOT schedule silence check here — Gemini is about to
+                            # speak the verbal response. We set _agent_speaking=True when audio
+                            # arrives and schedule silence only after turn_complete.
                         except Exception as e:
                             self._pending_tool_calls = 0
                             print(f">>> [BrowserWS ERROR] Failed to send tool response: {repr(e)}", flush=True)
@@ -378,6 +520,8 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                         if hasattr(t, "text") and t.text:
                             if self._record_user_transcript(t.text):
                                 print(f"[BrowserWS] [User] {_clean_transcript_text(t.text)}", flush=True)
+                                self._mark_user_input()  # Record actual user speech time
+                                self._cancel_silence_check()  # Cancel pending timer
 
                     # Track model transcription (voice) for high-fidelity audio history
                     if getattr(sc, "output_transcription", None):
@@ -396,12 +540,34 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
 
                             inline = getattr(part, "inline_data", None)
                             if inline and inline.data:
+                                # Signal frontend to mute mic when agent starts speaking
+                                # so the mic doesn't capture the agent's own audio output.
+                                if not self._agent_speaking:
+                                    self._agent_speaking = True
+                                    try:
+                                        await self.send(text_data=json.dumps({"type": "agent_speaking", "value": True}))
+                                    except Exception:
+                                        pass
                                 if self._save_as_greeting:
                                     greeting_buffer.extend(inline.data)
+                                if self._disconnecting:
+                                    # WebSocket is closing — silently drop outbound audio
+                                    continue
                                 if self._transport == "twilio":
                                     await self._stream_pcm_to_sip(inline.data)
                                 else:
-                                    await self.send(bytes_data=inline.data)
+                                    try:
+                                        await self.send(bytes_data=inline.data)
+                                    except Exception as send_exc:
+                                        # Daphne raises Disconnected when the WS
+                                        # protocol is already torn down (e.g. user
+                                        # navigated away or silence auto-close fired).
+                                        print(
+                                            f"❌ [BrowserWS] ConnectionClosed while forwarding audio: {send_exc}",
+                                            flush=True,
+                                        )
+                                        self._clear_session_state()
+                                        return  # Exit the receive loop cleanly
 
                     # Manage Greeting Saving
                     if (getattr(sc, "turn_complete", False) or getattr(sc, "interrupted", False)) and self._save_as_greeting and greeting_buffer:
@@ -414,10 +580,28 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                     if getattr(sc, "interrupted", False):
                         import json
                         print("[BrowserWS] Gemini interrupted — sending clear queue command", flush=True)
-                        await self.send(text_data=json.dumps({"event": "clear"}))
+                        try:
+                            await self.send(text_data=json.dumps({"event": "clear"}))
+                        except Exception:
+                            pass  # WS may be closing
 
                     # Save agent turn to history and detect goodbye
                     if getattr(sc, "turn_complete", False) or getattr(sc, "interrupted", False):
+                        # Agent has finished speaking — clear the flag so the silence
+                        # check can fire if the user doesn't respond.
+                        if self._agent_speaking:
+                            self._agent_speaking = False
+                            # Signal frontend to unmute mic (with a short delay for echo decay)
+                            try:
+                                await self.send(text_data=json.dumps({"type": "agent_speaking", "value": False}))
+                            except Exception:
+                                pass
+                        # Reset nudge counter after ANY Gemini turn completes.
+                        # Without this, Gemini's own nudge responses count toward
+                        # the 3-nudge limit and cause premature auto-close even
+                        # though the session is actively conversing.
+                        self._consecutive_nudges = 0
+                        self._last_user_input_time = time.time()
                         if self._current_agent_turn:
                             self._call_history.append({"role": "agent", "text": self._current_agent_turn.strip()})
                             idx = self._current_agent_turn.lower()
@@ -449,6 +633,10 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                                 else:
                                     print(f"[BrowserWS] Detected goodbye — scheduling disconnect.", flush=True)
                                     self._schedule_auto_close(6.0, "goodbye_detected")
+                            else:
+                                # Agent finished speaking — user's turn; start silence timeout
+                                # so if they go quiet we nudge them gently.
+                                self._schedule_silence_check()
                             self._current_agent_turn = ""
 
                         if self._should_end_call:

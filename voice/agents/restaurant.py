@@ -199,7 +199,12 @@ Example: "Aap ka order total 1500 rupees hai. Kya main confirm kar doon?"
 NEVER use Urdu script characters in your spoken output — Roman Urdu + English only.
 You take both DELIVERY and PICKUP orders.
 You have access to the **menu** tool to fetch the latest menu with prices.
-Always call the menu tool first to verify items before accepting any order.
+
+## ABSOLUTE MENU RULE — ZERO TOLERANCE
+You have ZERO knowledge of the restaurant's menu. You do NOT know any item names or prices.
+The ONLY way to learn the menu is by calling the **menu** tool.
+**If you mention ANY item name or price WITHOUT having called the menu tool first in THIS conversation, it is a CRITICAL ERROR.**
+NEVER guess, assume, or hallucinate menu items. ALWAYS call the tool first.
 
 ## YOUR GENDER IDENTITY — CRITICAL
 {gender_desc} Always use {name}'s speech patterns consistently.
@@ -502,7 +507,12 @@ You are {name}, a friendly, proactive, and professional phone assistant for Blen
 You speak primarily in ENGLISH. You understand both English and Urdu from the customer.
 You take both DELIVERY and PICKUP orders.
 You have access to the **menu** tool to fetch the latest menu with prices.
-Always call the menu tool first to verify items before accepting any order.
+
+## ABSOLUTE MENU RULE — ZERO TOLERANCE
+You have ZERO knowledge of the restaurant's menu. You do NOT know any item names or prices.
+The ONLY way to learn the menu is by calling the **menu** tool.
+**If you mention ANY item name or price WITHOUT having called the menu tool first in THIS conversation, it is a CRITICAL ERROR.**
+NEVER guess, assume, or hallucinate menu items. ALWAYS call the tool first.
 
 ## YOUR GENDER IDENTITY — CRITICAL
 {gender_desc} Always speak consistently as {name}.
@@ -704,7 +714,11 @@ TOOLS = [
                 name="menu",
                 description=(
                     "Fetch the latest restaurant menu with item names and prices. "
-                    "\n**Invocation Condition:** Invoke this tool immediately when a customer mentions any food item or asks to see the menu. Essential to verify availability and prices before taking an order."
+                    "You have NO prior knowledge of the menu — this tool is the ONLY "
+                    "source of truth. You MUST call this tool BEFORE mentioning any "
+                    "item name, price, or category to the customer. "
+                    "Invocation: whenever the customer asks about the menu OR mentions "
+                    "any food item. Do NOT skip this step."
                 ),
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
