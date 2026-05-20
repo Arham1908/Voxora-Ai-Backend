@@ -596,12 +596,6 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                                 await self.send(text_data=json.dumps({"type": "agent_speaking", "value": False}))
                             except Exception:
                                 pass
-                        # Reset nudge counter after ANY Gemini turn completes.
-                        # Without this, Gemini's own nudge responses count toward
-                        # the 3-nudge limit and cause premature auto-close even
-                        # though the session is actively conversing.
-                        self._consecutive_nudges = 0
-                        self._last_user_input_time = time.time()
                         if self._current_agent_turn:
                             self._call_history.append({"role": "agent", "text": self._current_agent_turn.strip()})
                             idx = self._current_agent_turn.lower()

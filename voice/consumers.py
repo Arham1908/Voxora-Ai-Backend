@@ -812,8 +812,16 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
 
     async def _silence_timeout_handler(self):
         """Wait, then nudge Gemini if the user has been silent."""
+        # After 3 consecutive nudges with no user response, close the session immediately
+        if self._consecutive_nudges >= 3:
+            print(f"[WS] 3 consecutive nudges unanswered — auto-closing idle session", flush=True)
+            # Give the user a last chance to speak (4s).
+            # If they do, _mark_user_input will cancel this auto-close.
+            self._schedule_auto_close(4.0, "silence_timeout_max_nudges")
+            return
+
         # Progressive timeouts: quick first check, longer for subsequent
-        _NUDGE_TIMEOUTS = [4.0, 8.0, 12.0]
+        _NUDGE_TIMEOUTS = [3.0, 5.0, 8.0]
         idx = min(self._consecutive_nudges, len(_NUDGE_TIMEOUTS) - 1)
         timeout = _NUDGE_TIMEOUTS[idx]
         await asyncio.sleep(timeout)
@@ -838,14 +846,6 @@ class VoiceAgentConsumer(AsyncWebsocketConsumer):
 
         if getattr(self, "_booking_state", None) == "booked":
             print(f"[WS] Terminal tool already completed — suppressing nudge", flush=True)
-            return
-
-        # After 3 consecutive nudges with no user response, close the session
-        if self._consecutive_nudges >= 3:
-            print(f"[WS] 3 consecutive nudges unanswered — auto-closing idle session", flush=True)
-            # Use a longer delay (3s) to give the user a last chance to speak.
-            # If they do, _mark_user_input will cancel this auto-close.
-            self._schedule_auto_close(3.0, "silence_timeout_max_nudges")
             return
 
         self._consecutive_nudges += 1
