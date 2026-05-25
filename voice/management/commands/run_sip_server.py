@@ -60,7 +60,7 @@ class Command(BaseCommand):
             os.environ["SIP_LANGUAGE"] = options["lang"]
 
         # Load config (after env override)
-        from voice.sip_config import SIP_AGENT_ID, SIP_VOICE, SIP_LANGUAGE
+        from voice.sip.config import SIP_AGENT_ID, SIP_VOICE, SIP_LANGUAGE
 
         agent_id = options["agent"] or SIP_AGENT_ID
         voice = options["voice"] or SIP_VOICE
@@ -86,7 +86,7 @@ class Command(BaseCommand):
             f"Starting SIP server with agent={agent_id}, voice={voice}, lang={language}"
         ))
 
-        from voice.sip_client import start_sip_server
+        from voice.sip import start_sip_server
 
         # Handle SIGINT gracefully
         def sigint_handler(signum, frame):

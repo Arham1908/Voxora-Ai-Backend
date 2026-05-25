@@ -1,6 +1,5 @@
 import json
 import re
-import time
 import threading
 import logging
 import requests
@@ -162,58 +161,7 @@ get_schedule → get_available_slots → book_appointment
 Never skip. Never reverse. Never book without verbal confirmation."""
 
 
-# ── GROQ TOOL DEFINITIONS ────────────────────────────────────────────
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_schedule",
-            "description": "Get the weekly schedule showing which days are open or closed",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_available_slots",
-            "description": "Get available time slots for a specific date",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "date": {
-                        "type": "string",
-                        "description": "Date in YYYY-MM-DD format",
-                    }
-                },
-                "required": ["date"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "book_appointment",
-            "description": "Book an appointment for a patient",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name":       {"type": "string", "description": "Patient full name"},
-                    "phone":      {"type": "string", "description": "Patient phone number"},
-                    "email":      {"type": "string", "description": "Patient email address (must contain @)"},
-                    "date":       {"type": "string", "description": "YYYY-MM-DD"},
-                    "start_time": {"type": "string", "description": "HH:MM (24-hour format)"},
-                    "end_time":   {"type": "string", "description": "HH:MM (24-hour format, always start_time + 30 minutes)"},
-                    "notes":      {"type": "string", "description": "Reason for appointment"},
-                },
-                "required": ["name", "phone", "email", "date", "start_time", "end_time"],
-            },
-        },
-    },
-]
-
-# ── GREETING ──────────────────────────────────────────────────────────
-# GREETING = "Assalam o Alaikum! Main Ali hoon, aapka appointment assistant. aaj aapki kya khidmat kar sakta hoon?"
-GREETING = "السلام علیکم! میں علی ہوں، آپ کا اپائنٹمنٹ اسسٹنٹ۔ آج آپ کی کیا خدمت کر سکتا ہوں؟"
+# Groq-style TOOLS and GREETING removed — see voice/agents/ for current tool definitions
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -262,42 +210,7 @@ def execute_tool(session, name: str, args: dict) -> str:
         return json.dumps({"error": str(e)})
 
 
-# ══════════════════════════════════════════════════════════════════════
-# GROQ API CALL WITH RETRY
-# Legacy Groq path is kept below for reference and rollback.
-# ══════════════════════════════════════════════════════════════════════
-
-def call_groq(session, messages, use_tools=True, max_retries=3):
-    """Call Groq with retry + backoff for 429 rate limits."""
-    for attempt in range(max_retries):
-        try:
-            kwargs = dict(
-                model="llama-3.3-70b-versatile",
-                messages=messages,
-                stream=False,
-                max_completion_tokens=500,
-                temperature=0.5,
-            )
-            if use_tools:
-                kwargs["tools"] = TOOLS
-                kwargs["tool_choice"] = "auto"
-            return session.groq_client.chat.completions.create(**kwargs)
-        except Exception as e:
-            err = str(e)
-            if "429" in err:
-                wait = 5 * (attempt + 1)
-                logger.warning(
-                    "[Call %s][Rate Limit] Waiting %ds (%d/%d)...",
-                    session.call_sid, wait, attempt + 1, max_retries,
-                )
-                session.speak_fn("ایک لمحہ، سسٹم مصروف ہے۔")
-                time.sleep(wait)
-            elif "tool_use_failed" in err:
-                logger.warning("[Call %s] tool_use_failed — retrying without tools", session.call_sid)
-                return call_groq(session, messages, use_tools=False, max_retries=1)
-            else:
-                raise
-    raise Exception("Groq: max retries exceeded (rate limited)")
+# Legacy Groq call_groq removed — see consumers.py for current Gemini Live path
 
 
 def _deserialize_tool_result(result: str):
@@ -394,19 +307,6 @@ def call_gemini(session, transcript: str, system_content: str):
 
 
 # ══════════════════════════════════════════════════════════════════════
-# CONVERSATION TRIMMING — 5 turns (10 messages) to save tokens
-# ══════════════════════════════════════════════════════════════════════
-
-def get_trimmed_messages(session, system_content):
-    """Build messages list with system prompt + last 5 turns (10 messages)."""
-    trimmed = session.conversation[-10:] if len(session.conversation) > 10 else session.conversation
-    return [
-        {"role": "system", "content": system_content},
-        *trimmed,
-    ]
-
-
-# ══════════════════════════════════════════════════════════════════════
 # LLM — agentic loop with tool call handling
 # ══════════════════════════════════════════════════════════════════════
 
@@ -428,8 +328,6 @@ def llm_and_speak(session, transcript: str):
     with session.llm_lock:
         session.conversation.append({"role": "user", "content": transcript})
 
-    messages = get_trimmed_messages(session, SYSTEM_PROMPT.replace("{time}", now))
-
     try:
         spoken_filler = None
 
@@ -438,7 +336,6 @@ def llm_and_speak(session, transcript: str):
                 logger.info("[Call %s][LLM] Cancelled before API call.", session.call_sid)
                 break
 
-            # response = call_groq(session, messages)
             response = call_gemini(session, transcript, SYSTEM_PROMPT.replace("{time}", now))
 
             # ── Normal text response — stream to TTS ──

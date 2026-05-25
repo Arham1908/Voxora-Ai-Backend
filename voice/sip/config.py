@@ -61,7 +61,7 @@ ASTERISK_PORT     = int(os.environ.get("ASTERISK_PORT", 5060))
 ASTERISK_USERNAME = os.environ.get("ASTERISK_USERNAME", "100")
 ASTERISK_PASSWORD = os.environ.get("ASTERISK_PASSWORD", "")
 SIP_AGENT_ID=os.environ.get("SIP_AGENT_ID",'')
-SIP_LANGUAGE=os.environ.get("os.environ.get",'')
+SIP_LANGUAGE=os.environ.get("SIP_LANGUAGE",'')
 SIP_VOICE=os.environ.get("SIP_VOICE",'')
 # ── Local / MicroSIP test settings (local mode) ──────────────────────
 # MicroSIP registers with these credentials to Python's RawSIPServer

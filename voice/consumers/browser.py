@@ -5,21 +5,18 @@
 #   - URL path: /ws/voice/<agent_id>/
 #   - Query string: ?voice=Aoede&language=ur-PK
 
-import time
 from pathlib import Path
 from google.genai import types
 from websockets.exceptions import ConnectionClosed
 import asyncio
 import json
-import logging
 import urllib.parse
 import truststore
 truststore.inject_into_ssl()
 
-from .consumers import VoiceAgentConsumer, MIC_RATE, OUT_RATE, _clean_transcript_text, _save_wav
-from .agents.registry import get_agent
-
-logger = logging.getLogger(__name__)
+from ..audio.utils import MIC_RATE, OUT_RATE, clean_transcript_text, save_wav
+from .base import VoiceAgentConsumer
+from ..agents.registry import get_agent
 
 BROWSER_PCM_CHUNK = 4800  # ~100ms at 24kHz PCM16
 HEARTBEAT_INTERVAL = 20   # seconds between keep-alive pings to mobile clients
@@ -57,13 +54,7 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
         headers = dict(self.scope.get("headers", []))
         self._diag_user_agent = headers.get(b"user-agent", b"").decode(errors="replace")
         origin = headers.get(b"origin", b"").decode(errors="replace")
-        print(
-            # f"🔌 [BrowserWS] CONNECTED — channel={self.channel_name}\n"
-            f"   📱 User-Agent: {self._diag_user_agent}\n"
-            f"   🌐 Origin: {origin}\n"
-            f"   🔗 Path: {self.scope.get('path', '?')}",
-            flush=True,
-        )
+        print(f"   📱 User-Agent: {self._diag_user_agent}\n   🌐 Origin: {origin}\n   🔗 Path: {self.scope.get('path', '?')}", flush=True)
 
         # Resolve agent_id from URL kwargs (set by routing.py)
         agent_id = self.scope["url_route"]["kwargs"].get("agent_id", "healthcare")
@@ -122,6 +113,9 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
     # ------------------------------------------------------------------
     # Override: expose dynamic config to parent _run_gemini_session
     # ------------------------------------------------------------------
+
+    def _get_agent_key(self) -> str:
+        return self._agent_cfg["id"] if self._agent_cfg else "default"
 
     def _get_system_prompt(self, has_cached_greeting: bool = False, schedule_data: list = None) -> str:
         return self._agent_cfg["build_system_prompt"](
@@ -239,7 +233,7 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
 
         # Agent State / Tool Lock: buffer incoming audio while a tool is executing
         if self._pending_tool_calls > 0:
-            if not hasattr(self, '_audio_queue'):
+            if self._audio_queue is None:
                 self._audio_queue = bytearray()
             self._audio_queue.extend(bytes_data)
             return
@@ -293,7 +287,7 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
         if hasattr(self, '_debug_mic_buffer') and len(self._debug_mic_buffer) > 0:
             from django.conf import settings
             debug_path = settings.BASE_DIR / "media/debug_mic.wav"
-            _save_wav(bytes(self._debug_mic_buffer), debug_path, MIC_RATE)
+            save_wav(bytes(self._debug_mic_buffer), debug_path, MIC_RATE)
         await super().disconnect(close_code)
 
     # ------------------------------------------------------------------
@@ -519,7 +513,7 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                         t = sc.input_transcription
                         if hasattr(t, "text") and t.text:
                             if self._record_user_transcript(t.text):
-                                print(f"[BrowserWS] [User] {_clean_transcript_text(t.text)}", flush=True)
+                                print(f"[BrowserWS] [User] {clean_transcript_text(t.text)}", flush=True)
                                 self._mark_user_input()  # Record actual user speech time
                                 self._cancel_silence_check()  # Cancel pending timer
 
@@ -527,7 +521,6 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                     if getattr(sc, "output_transcription", None):
                         t = sc.output_transcription
                         if hasattr(t, "text") and t.text:
-                            # print(f"[BrowserWS] [Agent Voice] {t.text}", flush=True)
                             if not self._current_agent_turn.endswith(t.text):
                                 self._current_agent_turn += t.text
 
@@ -571,14 +564,13 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
 
                     # Manage Greeting Saving
                     if (getattr(sc, "turn_complete", False) or getattr(sc, "interrupted", False)) and self._save_as_greeting and greeting_buffer:
-                        _save_wav(bytes(greeting_buffer), greeting_path, OUT_RATE)
+                        save_wav(bytes(greeting_buffer), greeting_path, OUT_RATE)
                         print(f"[BrowserWS] Greeting saved to {greeting_path}", flush=True)
                         self._save_as_greeting = False
                         greeting_buffer.clear()
 
                     # Handle Barge-in (Interrupted)
                     if getattr(sc, "interrupted", False):
-                        import json
                         print("[BrowserWS] Gemini interrupted — sending clear queue command", flush=True)
                         try:
                             await self.send(text_data=json.dumps({"event": "clear"}))

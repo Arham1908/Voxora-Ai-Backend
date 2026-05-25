@@ -3,12 +3,13 @@
 # Each entry defines the agent's config — system prompt, tools, greeting, voices, languages.
 
 from pathlib import Path
-from . import healthcare, restaurant
 
-# Available Gemini voices
+# Available Gemini voices — defined BEFORE agent imports to avoid circular imports
 ALL_VOICES = ["Aoede", "Puck", "Charon", "Kore", "Fenrir", "Leda"]
-FEMALE_VOICES = ["Aoede", "Kore", "Leda"]       # warm female voices
-MALE_VOICES   = ["Puck", "Charon", "Fenrir"]     # male voices
+FEMALE_VOICES = ["Aoede", "Kore", "Leda"]
+MALE_VOICES   = ["Puck", "Charon", "Fenrir"]
+
+from . import healthcare, restaurant
 
 SUPPORTED_LANGUAGES = [
     {"code": "ur-PK", "label": "Urdu"},

@@ -1,7 +1,7 @@
 """Management command to make outbound calls via Multinet."""
 
 from django.core.management.base import BaseCommand
-from voice.sip_client import SIPServer
+from voice.sip import SIPServer
 
 
 class Command(BaseCommand):

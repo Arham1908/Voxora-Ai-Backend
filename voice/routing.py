@@ -2,7 +2,7 @@
 from django.urls import re_path
 
 from . import consumers
-from voice.consumers_browser import BrowserVoiceConsumer  # Browser FE (PCM16)
+from .consumers.browser import BrowserVoiceConsumer  # Browser FE (PCM16)
 
 websocket_urlpatterns = [
     # Inbound Twilio now uses the Gemini Live consumer route.
