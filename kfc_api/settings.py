@@ -55,10 +55,15 @@ json.loads(google_service_account_json)  # Validate JSON
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = 'django-insecure-lx236l^sw$gkx5o7ic&n0!t59@xrzr8vr=hjz)f-wet8fo$@+8'
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = ['*']  # Allow all hosts for development
+ALLOWED_HOSTS = [
+    'localhost',
+    '127.0.0.1',
+    '.railway.app',
+]
+if os.getenv('RAILWAY_PUBLIC_DOMAIN'):
+    ALLOWED_HOSTS.append(os.getenv('RAILWAY_PUBLIC_DOMAIN'))
 
 
 # Application definition
@@ -93,6 +98,7 @@ AUTH_USER_MODEL ='authentication.User'
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -122,17 +128,34 @@ WSGI_APPLICATION = 'kfc_api.wsgi.application'
 ASGI_APPLICATION = 'kfc_api.asgi.application'
 
 
-# Database
-# https://docs.djangoproject.com/en/5.2/ref/settings/#databases
+# Use /app/data/db.sqlite3 for persistence on Railway volume
+if os.path.exists('/app/data'):
+    DB_PATH = Path('/app/data/db.sqlite3')
+else:
+    DB_PATH = BASE_DIR / 'db.sqlite3'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': os.getenv('DB_NAME'),
-        'USER': os.getenv('DB_USER'),
-        'PASSWORD': os.getenv('DB_PASSWORD'),
-        'HOST': os.getenv('DB_HOST'),
-        'PORT': os.getenv('DB_PORT', '5432'),
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': DB_PATH,
+    }
+}
+
+# No Redis requested - use In-Memory channel layer
+CHANNEL_LAYERS = {
+    "default": {
+        "BACKEND": "channels.layers.InMemoryChannelLayer",
+    },
+}
+
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": os.getenv("DB_NAME"),
+        "USER": os.getenv("DB_USER"),
+        "PASSWORD": os.getenv("DB_PASSWORD"),
+        "HOST": os.getenv("DB_HOST"),
+        "PORT": os.getenv("DB_PORT", "5432"),
     }
 }
 # DATABASES = {
@@ -173,10 +196,9 @@ USE_I18N = True
 USE_TZ = True
 
 
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.2/howto/static-files/
-
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -186,6 +208,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # CORS Configuration for Eleven Labs webhooks
 CORS_ALLOW_ALL_ORIGINS = True  # For development - allows all origins
 CORS_ALLOW_CREDENTIALS = True
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -213,7 +236,7 @@ LOGGING = {
             "level": "DEBUG",
             "propagate": False,
         },
-        "voice.sip_client": {
+        "voice.sip": {
             "handlers": ["console"],
             "level": "DEBUG",
             "propagate": False,
@@ -236,6 +259,8 @@ LOGGING = {
 CSRF_TRUSTED_ORIGINS = [
     'http://localhost:*',
     'http://127.0.0.1:*',
+    'https://*.railway.app',
+    'https://*.elevenlabs.io',
     # 'https://*.elevenlabs.io',
     'https://*.green-api.com',
     # Meta / WhatsApp Business Cloud API
@@ -247,6 +272,8 @@ CSRF_TRUSTED_ORIGINS = [
     # Railway production
     'https://*.up.railway.app',
 ]
+if os.getenv('RAILWAY_PUBLIC_DOMAIN'):
+    CSRF_TRUSTED_ORIGINS.append(f"https://{os.getenv('RAILWAY_PUBLIC_DOMAIN')}")
 
 # Exempt API endpoints from CSRF for external webhooks
 from datetime import timedelta

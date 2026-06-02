@@ -335,15 +335,23 @@ def generate_reply(phone: str, user_message: str, client: genai.Client) -> tuple
         log.info("Tool result: %s", tool_result[:200])
 
         # ── Check for successful completion ───────────────────────────────
+        # IMPORTANT: spoken_so_far was ALREADY appended to accumulated_reply at line 329
+        # So accumulated_reply already contains the user-facing text.
         if tool_name == "place_order" and tool_result.startswith("ORDER_SUCCESS"):
             result_data = _parse_order_success(tool_result, payload)
             result_type = "order"
-            set_context(phone, "router") # Return to router base state
-            
+            set_context(phone, "router")
+            update_history(phone, "assistant", raw_reply)
+            final_text = "\n\n".join(accumulated_reply)
+            return final_text, result_data, result_type
+
         elif tool_name == "book_appointment" and tool_result.startswith("BOOKING_SUCCESS"):
             result_data = _parse_booking_success(tool_result, payload)
             result_type = "booking"
-            set_context(phone, "router") # Return to router base state
+            set_context(phone, "router")
+            update_history(phone, "assistant", raw_reply)
+            final_text = "\n\n".join(accumulated_reply)
+            return final_text, result_data, result_type
 
         # ── Inject tool result into history so LLM can continue ───────────
         if spoken_so_far:

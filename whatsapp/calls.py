@@ -26,6 +26,7 @@ from aiortc import (
     RTCConfiguration,
     RTCIceServer,
 )
+from aiortc.mediastreams import MediaStreamError
 from av import AudioFrame
 
 logger = logging.getLogger(__name__)
@@ -437,6 +438,11 @@ class WhatsAppCallSession:
             try:
                 await receiver.recv()
             except asyncio.CancelledError:
+                break
+            except asyncio.CancelledError:
+                break
+            except aiortc.mediastreams.MediaStreamError:
+                logger.info(f"[{self.call_id}] Caller audio track ended — normal call disconnect")
                 break
             except Exception as e:
                 if self._running:
