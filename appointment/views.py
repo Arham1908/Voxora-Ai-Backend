@@ -6,7 +6,6 @@ from django.views.decorators.csrf import csrf_exempt
 from .models import Schedule,Appointment
 from .serializers import ScheduleSerializer
 from .serializers import AppointmentSerializer
-from .services.google_calender import create_meeting, cancel_meeting
 from .services.email_service import send_appointment_email
 from rest_framework.views import APIView
 from datetime import datetime, timedelta, date as today_date
@@ -192,10 +191,6 @@ class AppointmentCancelView(APIView):
         appointment = Appointment.objects.get(pk=pk)
         appointment.status = 'cancelled'
         appointment.save()
-
-        # Cancel the Google Calendar event too
-        if appointment.google_event_id:
-            cancel_meeting(appointment.google_event_id)
 
         return Response({'message': 'Appointment cancelled'})
 

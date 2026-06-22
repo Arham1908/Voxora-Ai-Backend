@@ -23,9 +23,17 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from google import genai
 
-from whatsapp.ai_agent import generate_reply, _get_vertex_client, _is_retriable_error
+from whatsapp.ai_agent import generate_reply
 
 log = logging.getLogger(__name__)
+
+# ── Error classification for retries ──────────────────────────────────────────
+def _is_retriable_error(exc: Exception) -> bool:
+    """Return True if *exc* warrants a retry."""
+    err_str = str(exc).lower()
+    err_type = type(exc).__name__.lower()
+    triggers = ("503", "service unavailable", "unavailable", "model not available", "overloaded", "resource has been exhausted", "quota", "rate limit", "429")
+    return any(t in err_str for t in triggers) or "serviceunavailable" in err_type
 
 # TTS retry settings — separate from LLM retries (TTS is more forgiving)
 _TTS_MAX_RETRIES   = 2
@@ -182,30 +190,8 @@ async def synthesize_voice_sana_async(text: str, language: str = "ur-PK") -> byt
                 log.error("[WhatsApp TTS] Non-retriable TTS error: %s", exc)
                 return b""
 
-    # ── Stage 2: Vertex AI TTS fallback ─────────────────────────────────
-    log.warning(
-        "[WhatsApp TTS] All AI Studio retries exhausted (%s). Switching to Vertex AI TTS.",
-        last_exc,
-    )
-    vertex_client = _get_vertex_client()
-    if vertex_client is None:
-        log.error("[WhatsApp TTS] Vertex AI fallback unavailable.")
-        return b""
-
-    try:
-        response = await vertex_client.aio.models.generate_content(
-            model="gemini-2.5-flash-preview-tts",
-            contents=text,
-            config=tts_config,
-        )
-        log.info("[WhatsApp TTS] Vertex AI TTS fallback succeeded.")
-        return _extract_wav(response)
-    except Exception as vertex_exc:
-        log.error(
-            "[WhatsApp TTS] Vertex AI TTS fallback ALSO failed: %s",
-            vertex_exc,
-        )
-        return b""
+    log.error("[WhatsApp TTS] All AI Studio retries exhausted (%s).", last_exc)
+    return b""
 
 
 def synthesize_voice_sana(text: str, language: str = "ur-PK") -> bytes:
@@ -303,20 +289,7 @@ def download_and_transcribe(download_url: str) -> str:
                     log.error("[WhatsApp STT] Non-retriable transcription error: %s", exc)
                     return ""
 
-        # ── Stage 2: Vertex AI transcription fallback ─────────────────────
-        log.warning(
-            "[WhatsApp STT] AI Studio transcription retries exhausted (%s). Trying Vertex AI.",
-            last_exc,
-        )
-        vertex_client = _get_vertex_client()
-        if vertex_client is not None:
-            try:
-                text = _do_transcribe(vertex_client)
-                log.info("[WhatsApp STT] Vertex AI transcription succeeded: %s", text)
-                return text
-            except Exception as vertex_exc:
-                log.error("[WhatsApp STT] Vertex AI transcription also failed: %s", vertex_exc)
-
+        log.error("[WhatsApp STT] All AI Studio retries exhausted (%s).", last_exc)
         return ""
 
     except Exception as e:

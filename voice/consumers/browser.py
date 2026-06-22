@@ -568,6 +568,10 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                         print(f"[BrowserWS] Greeting saved to {greeting_path}", flush=True)
                         self._save_as_greeting = False
                         greeting_buffer.clear()
+                        try:
+                            await self._send_browser_session_ready()
+                        except Exception:
+                            pass
 
                     # Handle Barge-in (Interrupted)
                     if getattr(sc, "interrupted", False):
@@ -646,17 +650,18 @@ class BrowserVoiceConsumer(VoiceAgentConsumer):
                                         f"(state={getattr(self, '_booking_state', '')}, "
                                         f"filler_spoken={agent_spoke_order_filler}) but "
                                         f"terminal tool was NEVER called! Blocking disconnect "
-                                        f"and nudging model to call place_order.",
+                                        f"and nudging model to call terminal tool.",
                                         flush=True,
                                     )
                                     self._should_end_call = False
+                                    terminal_tool = "book_appointment" if self._get_agent_key() == "healthcare" else "place_order"
                                     # Nudge Gemini to actually invoke the tool
                                     try:
                                         await session.send_realtime_input(
                                             text=(
                                                 "[System: CRITICAL — You said goodbye but you "
-                                                "did NOT call the place_order tool. The order has "
-                                                "NOT been saved. You MUST call the place_order "
+                                                f"did NOT call the {terminal_tool} tool. The booking/order has "
+                                                f"NOT been saved. You MUST call the {terminal_tool} "
                                                 "tool RIGHT NOW with all the order details before "
                                                 "ending this call. Do NOT say goodbye again until "
                                                 "the tool has been called and you received a result.]"

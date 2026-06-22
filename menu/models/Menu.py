@@ -4,7 +4,7 @@ from .Category import Category
 class Menu(models.Model):
     name = models.CharField(max_length=200)
     cost = models.IntegerField()
-    category = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, blank=True, related_name='items')
+    category = models.ForeignKey(Category, on_delete=models.PROTECT, null=False, blank=False, related_name='items')
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

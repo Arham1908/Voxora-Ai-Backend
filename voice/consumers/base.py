@@ -9,8 +9,6 @@ import uuid
 
 from channels.generic.websocket import AsyncWebsocketConsumer
 from websockets.exceptions import ConnectionClosed
-from google.oauth2 import service_account
-import vertexai
 import truststore
 import audioop
 truststore.inject_into_ssl()
@@ -46,28 +44,6 @@ from ..audio.utils import twilio_payload_to_pcm16k
 
 logger = logging.getLogger(__name__)
 
-_raw_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
-if not _raw_json:
-    raise EnvironmentError("GOOGLE_SERVICE_ACCOUNT_JSON environment variable is not set.")
-
-try:
-    _sa_info = json.loads(_raw_json)
-except json.JSONDecodeError as e:
-    raise ValueError(f"Invalid JSON in GOOGLE_SERVICE_ACCOUNT_JSON: {e}") from e
-
-_sa_info["private_key"] = _sa_info["private_key"].replace("\\n", "\n")
-
-_credentials = service_account.Credentials.from_service_account_info(
-    _sa_info, scopes=["https://www.googleapis.com/auth/cloud-platform"],
-)
-
-_PROJECT  = os.environ.get("VERTEX_PROJECT")
-_LOCATION = os.environ.get("VERTEX_LOCATION")
-if not _PROJECT:
-    raise EnvironmentError("VERTEX_PROJECT must be set.")
-
-vertexai.init(project=_PROJECT, location=_LOCATION, credentials=_credentials)
-
 os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
 os.environ.pop("GOOGLE_SERVICE_ACCOUNT_FILE", None)
 
@@ -82,9 +58,8 @@ def _create_live_clients():
         raise EnvironmentError("GEMINI_API_KEY must be set.")
     t0 = time.time()
     primary = genai.Client(api_key=gemini_api_key)
-    vertex  = genai.Client(vertexai=True, project=_PROJECT, location=_LOCATION, credentials=_credentials)
-    print(f"[WS Startup] Gemini clients created in {time.time()-t0:.2f}s (Direct + Vertex)", flush=True)
-    return primary, vertex
+    print(f"[WS Startup] Gemini client created in {time.time()-t0:.2f}s (Direct API)", flush=True)
+    return primary, None
 
 
 _SHARED_GEMINI_CLIENT, _SHARED_VERTEX_CLIENT = _create_live_clients()
@@ -134,6 +109,7 @@ class VoiceAgentConsumer(
         self._audio_queue = bytearray()
         self._thinking_tokens_from_usage = 0
         self._logged_modality_sample = False
+        self._browser_session_ready_sent = False
 
     # ── WebSocket lifecycle ───────────────────────────────────────────
 
@@ -244,6 +220,16 @@ class VoiceAgentConsumer(
         self.gemini_session = None
         self._session_ready.clear()
         self._audio_queue.clear()
+        self._browser_session_ready_sent = False
+
+    async def _send_browser_session_ready(self):
+        if self._transport != "browser" or self._browser_session_ready_sent:
+            return
+        await self.send(text_data=json.dumps({
+            "event": "session_ready",
+            "type": "session_ready",
+        }))
+        self._browser_session_ready_sent = True
 
     async def _close_gemini_session(self, session=None, reason: str = "cleanup"):
         session = session or self.gemini_session
@@ -321,6 +307,11 @@ class VoiceAgentConsumer(
             if self._disconnecting:
                 return
             if self._is_503_error(primary_exc):
+                if self._vertex_client is None:
+                    logger.error("Gemini Live session failed and Vertex fallback is disabled: %s", primary_exc, exc_info=True)
+                    self._clear_session_state()
+                    await self.close()
+                    return
                 self._clear_session_state()
                 await asyncio.sleep(0.5)
                 history_snapshot = list(self._call_history)
@@ -398,10 +389,11 @@ class VoiceAgentConsumer(
                 await self._on_gemini_ready()
 
                 await self._handle_greeting(warm.session)
-                # Signal browser FE to open mic gate (mirrors line 449 cold-start path)
-                if self._transport == "browser":
-                    try: await self.send(text_data=json.dumps({"type": "session_ready"}))
-                    except Exception: pass
+                if has_cached_greeting:
+                    try:
+                        await self._send_browser_session_ready()
+                    except Exception:
+                        pass
                 self._mark_user_input()
                 self._schedule_silence_check()
 
@@ -449,11 +441,17 @@ class VoiceAgentConsumer(
 
                 if is_fallback:
                     await session.send_realtime_input(text="[System: You have seamlessly taken over this call. Do not re-greet. Acknowledge the brief pause and continue naturally.]")
-                    if self._transport == "browser":
-                        try: await self.send(text_data=json.dumps({"type": "session_ready"}))
-                        except Exception: pass
+                    try:
+                        await self._send_browser_session_ready()
+                    except Exception:
+                        pass
                 else:
                     await self._handle_greeting(session)
+                    if has_cached_greeting:
+                        try:
+                            await self._send_browser_session_ready()
+                        except Exception:
+                            pass
                     self._mark_user_input()
                     self._schedule_silence_check()
 
@@ -635,6 +633,10 @@ class VoiceAgentConsumer(
             save_wav(bytes(greeting_buffer), self._get_greeting_path(), OUT_RATE)
             self._save_as_greeting = False
             greeting_buffer.clear()
+            try:
+                await self._send_browser_session_ready()
+            except Exception:
+                pass
 
         if not self._current_agent_turn:
             return

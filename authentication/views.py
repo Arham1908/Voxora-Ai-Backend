@@ -8,8 +8,6 @@ from rest_framework.permissions import IsAuthenticated ,AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from django.conf import settings
-from google.oauth2 import id_token
-from google.auth.transport import requests as google_requests
 
 from .models import User
 from .serializers import (

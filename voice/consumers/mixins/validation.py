@@ -22,6 +22,22 @@ class ValidationMixin:
     def _email_match_text(value: str) -> str:
         return re.sub(r"\s+", "", str(value or "").casefold())
 
+    @staticmethod
+    def _has_non_latin_text(value: str) -> bool:
+        return bool(re.search(r"[^\W\d_a-z]", value, flags=re.IGNORECASE))
+
+    def _name_was_provided(self, name: str, user_text: str) -> bool:
+        if not name:
+            return False
+        name_tokens = re.findall(r"[a-z0-9]{2,}", name.casefold())
+        if name_tokens and all(t in user_text for t in name_tokens):
+            return True
+        # Gemini often transliterates Urdu/Arabic-script names into Latin
+        # tool args, e.g. "عدیل چوہدری" -> "Adeel Chaudhry".
+        if name_tokens and self._has_non_latin_text(user_text):
+            return True
+        return not name_tokens
+
     def _validate_terminal_tool_args(self, tool_name: str, tool_args: dict) -> dict | None:
         if tool_name != "book_appointment":
             return None
@@ -30,8 +46,7 @@ class ValidationMixin:
         user_digits = self._digits_only(user_text)
         missing = []
         name = str(tool_args.get("name") or "").strip()
-        name_tokens = re.findall(r"[a-z0-9]{2,}", name.casefold())
-        if not name or (name_tokens and not all(t in user_text for t in name_tokens)):
+        if not self._name_was_provided(name, user_text):
             missing.append("name")
         phone_digits = self._digits_only(tool_args.get("phone"))
         if len(phone_digits) < 10 or phone_digits not in user_digits:

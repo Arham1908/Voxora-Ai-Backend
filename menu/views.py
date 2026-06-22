@@ -16,18 +16,45 @@ from rest_framework.permissions import AllowAny
 def menu(request):
     """Return the KFC menu items"""
     if request.method == "POST":
-        serializer = MenuSerializer(data=request.data)
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Log raw request data for debugging
+        logger.info(f"Raw POST data received: {request.data}")
+        logger.info(f"Request content-type: {request.content_type}")
+        
+        # Create mutable copy
+        data = dict(request.data)
+        
+        # Handle multiple possible field names for category
+        if 'category_id' in data and 'category' not in data:
+            data['category'] = data.pop('category_id')
+        
+        # Handle empty string for category (frontend may send empty string instead of null)
+        if 'category' in data and data['category'] == '':
+            data['category'] = None
+        
+        logger.info(f"Processed data: {data}")
+        logger.info(f"Data keys: {list(data.keys())}")
+        
+        serializer = MenuSerializer(data=data)
 
         if serializer.is_valid():
-            serializer.save()
+            instance = serializer.save()
+            response_data = MenuSerializer(instance).data
+            logger.info(f"Menu item created successfully: {response_data}")
             return Response({
                 "success": True,
                 "message": "Menu item created successfully",
-                "data": serializer.data
+                "data": response_data
             }, status=status.HTTP_201_CREATED)
 
+        logger.error(f"Serializer validation failed. Errors: {serializer.errors}")
+        logger.error(f"Incoming fields: name={data.get('name')}, cost={data.get('cost')}, category={data.get('category')}")
+        
         return Response({
             "success": False,
+            "message": "Failed to create menu item",
             "errors": serializer.errors
         }, status=status.HTTP_400_BAD_REQUEST)
 

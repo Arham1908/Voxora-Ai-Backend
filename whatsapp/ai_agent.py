@@ -10,11 +10,6 @@ Flow per turn:
     3. Execute the tool, inject result as a system message.
     4. Re-call the LLM so it can continue the conversation naturally.
     5. Return the final reply to the customer.
-
-Fallback (503 / quota errors):
-    - Retries the AI Studio call up to MAX_RETRIES times with exponential backoff.
-    - If all retries fail, transparently switches to Vertex AI for the same call.
-    - Conversation history is fully preserved across the switch.
 """
 
 import json
@@ -23,7 +18,6 @@ import os
 import re
 import time
 from google import genai
-from google.oauth2 import service_account
 
 from whatsapp.prompt_builder import (
     build_router_prompt,
@@ -36,43 +30,6 @@ from whatsapp.tools import (
 )
 
 log = logging.getLogger(__name__)
-
-# ── Vertex AI fallback client (lazy, built once) ──────────────────────────────
-_vertex_client: genai.Client | None = None
-
-
-def _get_vertex_client() -> genai.Client:
-    """Lazy-initialise and return the Vertex AI genai.Client."""
-    global _vertex_client
-    if _vertex_client is not None:
-        return _vertex_client
-
-    # Reuse the service-account JSON that the voice consumer already reads.
-    raw_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-    project   = os.environ.get("VERTEX_PROJECT", "")
-    location  = os.environ.get("VERTEX_LOCATION", "us-central1")
-
-    if raw_json and project:
-        try:
-            sa_info = json.loads(raw_json)
-            sa_info["private_key"] = sa_info["private_key"].replace("\\n", "\n")
-            credentials = service_account.Credentials.from_service_account_info(
-                sa_info,
-                scopes=["https://www.googleapis.com/auth/cloud-platform"],
-            )
-            _vertex_client = genai.Client(
-                vertexai=True,
-                project=project,
-                location=location,
-                credentials=credentials,
-            )
-            log.info("[WhatsApp AI] Vertex AI client initialised (project=%s, location=%s)", project, location)
-            return _vertex_client
-        except Exception as exc:
-            log.warning("[WhatsApp AI] Vertex AI client init failed: %s", exc)
-
-    log.warning("[WhatsApp AI] Vertex AI credentials unavailable — fallback will not work")
-    return None  # type: ignore[return-value]
 
 
 # ── Fallback error classification ─────────────────────────────────────────────
@@ -232,30 +189,8 @@ def _call_gemini_with_fallback(client: genai.Client, history: list, system_msg: 
                 log.error("[WhatsApp AI] Non-retriable AI Studio error: %s", exc)
                 return None
 
-    # ── Stage 2: Vertex AI fallback ────────────────────────────────────────
-    log.warning(
-        "[WhatsApp AI] All %d AI Studio retries exhausted (%s). Switching to Vertex AI.",
-        MAX_RETRIES, last_exc,
-    )
-    vertex_client = _get_vertex_client()
-    if vertex_client is None:
-        log.error("[WhatsApp AI] Vertex AI fallback unavailable — no credentials configured.")
-        return None
-
-    try:
-        response = vertex_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=_build_contents(),
-            config=config,
-        )
-        log.info("[WhatsApp AI] Vertex AI fallback succeeded.")
-        return response
-    except Exception as vertex_exc:
-        log.error(
-            "[WhatsApp AI] Vertex AI fallback ALSO failed: %s: %s",
-            type(vertex_exc).__name__, vertex_exc,
-        )
-        return None
+    log.error("[WhatsApp AI] All %d AI Studio retries exhausted (%s).", MAX_RETRIES, last_exc)
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

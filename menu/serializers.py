@@ -33,8 +33,29 @@ class CategorySerializer(serializers.ModelSerializer):
 
 
 class MenuSerializer(serializers.ModelSerializer):
-    category_name = serializers.CharField(source='category.name', read_only=True)
+    category_name = serializers.CharField(source='category.name', read_only=True, required=False)
+    category = serializers.PrimaryKeyRelatedField(
+        queryset=Category.objects.all(),
+        required=True,  # REQUIRED - must be sent from frontend
+        allow_null=False,
+        error_messages={
+            'required': 'Category is required. Please select a category from the dropdown.',
+            'does_not_exist': 'Selected category does not exist.',
+            'incorrect_type': 'Category must be a valid category ID (integer).',
+        }
+    )
     
     class Meta:
         model = Menu
-        fields = "__all__"
+        fields = ['id', 'name', 'cost', 'category', 'category_name', 'created_at']
+        read_only_fields = ['id', 'category_name', 'created_at']
+        extra_kwargs = {
+            'name': {
+                'required': True,
+                'error_messages': {'required': 'Item name is required.'}
+            },
+            'cost': {
+                'required': True,
+                'error_messages': {'required': 'Item cost is required.'}
+            }
+        }
