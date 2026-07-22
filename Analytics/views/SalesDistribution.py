@@ -11,6 +11,7 @@ class SalesDistribution(APIView):
     """
     API to get total quantity sold per menu item in the past 7 days
     """
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def get(self, request, *args, **kwargs):

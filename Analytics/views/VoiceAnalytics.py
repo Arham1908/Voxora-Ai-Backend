@@ -11,6 +11,7 @@ class GeminiCostStatsView(APIView):
     """
     API view to return aggregated Gemini cost and token statistics.
     """
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def get(self, request, *args, **kwargs):
@@ -66,6 +67,7 @@ class GeminiCallHistoryView(APIView):
     """
     API view to return list of call history from Gemini sessions.
     """
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def get(self, request, *args, **kwargs):

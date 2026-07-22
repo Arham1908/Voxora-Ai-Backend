@@ -11,6 +11,7 @@ class RevenuePerformance(APIView):
     """
     API to get number of orders and total revenue for each of the last 7 days
     """
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def get(self, request, *args, **kwargs):

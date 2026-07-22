@@ -7,6 +7,7 @@ from menu.models import Order, Menu
 from rest_framework.permissions import AllowAny
 
 class order_stats(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def get(self, request, *args, **kwargs):

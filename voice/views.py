@@ -5,7 +5,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from .agents.registry import list_agents_public
 from rest_framework.permissions import AllowAny
-from rest_framework.decorators import permission_classes
+from rest_framework.decorators import permission_classes, authentication_classes
 
 # ---------------------------------------------------------------------------
 # Twilio webhook views (kept for URL compatibility)
@@ -41,6 +41,7 @@ def call_status(request):
 # ---------------------------------------------------------------------------
 
 @api_view(["GET"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def agents_list(request):
     """Return public list of all available voice agents with their config."""

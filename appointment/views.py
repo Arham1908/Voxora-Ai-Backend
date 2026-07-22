@@ -1,5 +1,5 @@
 from django.shortcuts import render
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.response import Response
 from rest_framework import status
 from django.views.decorators.csrf import csrf_exempt
@@ -16,6 +16,7 @@ from rest_framework.permissions import AllowAny
 import os
 @csrf_exempt
 @api_view(['GET', 'POST', 'PATCH'])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def schedule(request):
     if request.method == "GET":
@@ -71,6 +72,7 @@ def schedule(request):
         }, status=status.HTTP_400_BAD_REQUEST)
 
 class AppointmentCreateView(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -185,6 +187,7 @@ class AppointmentCreateView(APIView):
 
 
 class AppointmentCancelView(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def patch(self, request, pk):
@@ -196,6 +199,7 @@ class AppointmentCancelView(APIView):
 
 
 class AppointmentListView(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def get(self, request):
@@ -222,6 +226,7 @@ class AppointmentListView(APIView):
 
 
 class AvailableSlotsView(APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
     
     def get(self, request):

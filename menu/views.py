@@ -1,4 +1,4 @@
-from rest_framework.decorators import api_view,permission_classes
+from rest_framework.decorators import api_view,permission_classes,authentication_classes
 from rest_framework.response import Response
 from rest_framework import status
 from django.views.decorators.csrf import csrf_exempt
@@ -12,6 +12,7 @@ from rest_framework.permissions import AllowAny
 
 @csrf_exempt
 @api_view(['GET', 'POST', 'DELETE'])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def menu(request):
     """Return the KFC menu items"""
@@ -97,6 +98,7 @@ def menu(request):
 
 @csrf_exempt
 @api_view(['GET', 'POST', 'DELETE'])
+@authentication_classes([])
 @permission_classes([AllowAny])
 
 def categories(request):
@@ -137,6 +139,7 @@ def categories(request):
 
 @csrf_exempt
 @api_view(["GET", "POST"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 
 def orders(request):
@@ -163,6 +166,7 @@ def orders(request):
 
 @csrf_exempt
 @api_view(["GET"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 
 def call_list(request):
@@ -191,6 +195,7 @@ def call_list(request):
 
 @csrf_exempt
 @api_view(["POST"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 
 def initiate_call(request):
@@ -263,6 +268,7 @@ def initiate_call(request):
 
 @csrf_exempt
 @api_view(["POST"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 
 def get_chat_token(request):
@@ -381,6 +387,7 @@ def elevenlabs_webhook(request):
 
 @csrf_exempt
 @api_view(["GET"])
+@authentication_classes([])
 @permission_classes([AllowAny])
 def call_status(request, conversation_id):
     """
